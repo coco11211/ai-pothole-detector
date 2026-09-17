@@ -59,6 +59,23 @@ impl HeaderGate for StructureAndPow {
     }
 }
 
+/// Structures whose unbounded growth would be a leak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryProxies {
+    /// Blocks in the DAG. Grows with the chain by design.
+    pub dag_blocks: usize,
+    /// Orphans held. Must return to zero when the network settles.
+    pub orphans: usize,
+    /// Outstanding block requests. Must return to zero when settled.
+    pub pending_requests: usize,
+    /// Undo records held. Bounded by the pruning window.
+    pub journal_records: usize,
+    /// Accounts covered by all undo records.
+    pub journal_entries: usize,
+    /// Block bodies held. Grows with the chain by design.
+    pub bodies: usize,
+}
+
 /// Quality of the link between two nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkQuality {
@@ -691,6 +708,23 @@ impl Simulation {
     /// A node's state root at the current executed tip.
     pub fn state_root(&self, node: usize) -> B256 {
         self.nodes[node].executor.state_root()
+    }
+
+    /// Memory-growth proxies for a node, for the soak test.
+    ///
+    /// Actual RSS is not measurable portably and would be dominated by the
+    /// allocator anyway. These are the structures that could grow without
+    /// bound, so they are the ones worth asserting on.
+    pub fn memory_proxies(&self, node: usize) -> MemoryProxies {
+        let n = &self.nodes[node];
+        MemoryProxies {
+            dag_blocks: n.sync.dag().len(),
+            orphans: n.sync.orphan_count(),
+            pending_requests: n.sync.pending_request_count(),
+            journal_records: n.executor.journal_len(),
+            journal_entries: n.executor.journal_entries(),
+            bodies: n.bodies.len(),
+        }
     }
 
     /// A node's recorded state root at a given chain height.

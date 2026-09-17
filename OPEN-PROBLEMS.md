@@ -73,7 +73,7 @@ Exchange-style integrations must pick a depth and own that choice.
 propagation delay bound, which does not exist until the M5 harness runs.
 Guessing it would be the single most dangerous shortcut available. M9 gate.
 
-## P-009 — reachability is O(|past|), not O(1)
+## P-009 — reachability is O(|past|), not O(1) — MITIGATED
 
 `DagStore::is_ancestor_of` is a memoised breadth-first search over parent
 edges. Correct, simple, and adequate for tests and moderate DAGs. It is called
@@ -83,8 +83,26 @@ Kaspa solves this with interval-labelled reachability, which answers ancestry
 in O(1) by assigning each block an interval in a tree traversal and testing
 containment. That is the known fix, deliberately deferred.
 
-This is a performance ceiling, not a correctness gap, but it will bind before
-M8's soak test is meaningful at scale. Scheduled debt.
+**Mitigated at M8.** The search is now pruned by *topological height* — the
+longest path from genesis, which strictly increases along ancestry — so a
+branch is abandoned as soon as it reaches a block no deeper than the one being
+looked for. Blue score would not work here: it counts blocks while
+selected-parent choice compares work, so the two disagree whenever difficulty
+varies, and a prune based on it would return wrong answers on exactly the
+chains where difficulty moved.
+
+Two other quadratics were removed at the same time: `DagStore::tips()` scanned
+every header on every call (now maintained incrementally), and `compute_reorg`
+walked both selected-parent chains to genesis on every block (now walks in
+lockstep to the common ancestor, so it costs the reorg's depth rather than the
+chain's length).
+
+Together these took a 24-hour ten-node simulated soak from an estimated half a
+day of real time to under eight minutes, and made cost linear in chain length
+rather than quadratic.
+
+Still open: this is not Kaspa's interval-labelled reachability, which answers
+in O(1). The prune makes the current cost affordable, not free.
 
 ## P-010 — paying red blocks weakens the k-cluster incentive
 
@@ -167,16 +185,20 @@ reintroduces some of the coupling deferred execution was meant to remove).
 Neither is chosen. It must be resolved before the chain carries anything worth
 spamming.
 
-## P-014 — the undo journal is unbounded in principle
+## P-014 — the undo journal is unbounded in principle — PARTIALLY RESOLVED
 
 `ChainExecutor` keeps one undo record per executed chain block and prunes only
 when told to. The record holds the pre-value of every account a block touched,
 so a block touching a large contract's storage produces a large record.
 
-`prune_journal` exists and the pruning horizon is the finality window, but
-nothing calls it on a schedule yet, and no accounting bounds a single record's
-size. A reorg deeper than the pruned horizon cannot be undone at all — the node
-must resync — and that path is not implemented either.
+**Partially resolved at M8.** `ChainExecutor` now prunes automatically after
+every block, keeping records only within the pruning window. The 24-hour soak
+confirms the journal tracks chain height rather than growing without bound.
+
+Still open: nothing bounds a *single* record's size, so one block touching a
+very large contract's storage produces a very large record. And a reorg deeper
+than the pruning window still cannot be undone — the node would have to resync,
+and that path does not exist.
 
 ## P-015 - `eth_getLogs` scans blocks instead of using an index
 

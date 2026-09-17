@@ -341,6 +341,43 @@ from already-final integers and never fed back into state.
 The rule stays absolute where it matters, and every exception is visible at its
 site rather than invisible in a config file.
 
+## D-038 - reachability prunes on topological height, never blue score - SETTLED
+
+Topological height (longest path from genesis) strictly increases along
+ancestry by construction, so it is a sound bound for abandoning a branch during
+a reachability search.
+
+Blue score is *not* sound for this and the distinction matters. Blue score
+counts blocks; selected-parent choice compares accumulated work. They agree
+only while difficulty is constant, which is exactly the condition a test
+network satisfies and a real one does not. A prune on blue score would pass
+every test here and return wrong answers in production on any chain where
+difficulty moved - the worst possible failure mode.
+
+## D-039 - the soak runs in simulated time - SETTLED
+
+The M8 gate asks for a 24-hour ten-node soak. It runs as 24 hours of
+*simulated* time, deterministically, from a seed, in under eight minutes.
+
+A wall-clock soak would take a day, could not run in CI, and a divergence in
+hour nineteen would be unreproducible and therefore undebuggable. The
+simulation runs the real state machine, the real DAG, real proof of work and
+real signed transactions; only the clock and the sockets are substituted. What
+it does not cover - TCP framing, handshake, backpressure - is covered
+separately by `crates/net/tests/tcp_convergence.rs` over real sockets.
+
+## D-040 - an incomplete handshake is repaired, not punished - SETTLED
+
+A message from a peer we have not finished handshaking with means our
+`Version` was lost, not that the peer is hostile. The response is to re-send
+it, and the periodic tick retries any handshake still outstanding.
+
+An earlier version charged a penalty and disconnected after four such
+messages. At 40% packet loss that turned one dropped handshake into a
+permanently broken connection, and a six-node network quietly disconnected
+itself into permanent non-convergence. On a lossy link a dropped handshake is
+not rare, it is expected, so it has to be recoverable.
+
 ---
 
 # CORRECTIONS

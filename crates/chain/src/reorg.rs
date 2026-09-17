@@ -5,8 +5,6 @@
 //! join it. This computes exactly which, so execution can undo and redo the
 //! minimum.
 
-use std::collections::HashSet;
-
 use chainname_ghostdag::DagStore;
 use chainname_primitives::BlockHash;
 
@@ -46,34 +44,62 @@ pub fn compute_reorg(dag: &DagStore, old_tip: BlockHash, new_tip: BlockHash) -> 
         return ChainReorg::default();
     }
 
-    // Tip-first chains, both ending at genesis.
-    let old_chain = dag.selected_parent_chain(old_tip);
-    let new_chain = dag.selected_parent_chain(new_tip);
+    // Walk both chains back in lockstep, always stepping whichever cursor is
+    // deeper, until they meet. Cost is proportional to the reorg's depth, not
+    // to the chain's length.
+    //
+    // Building both chains to genesis and intersecting them is simpler and was
+    // what this did first, but it is O(height) on every single block, which is
+    // quadratic over a chain's life and dominated a long simulated run.
+    //
+    // Termination: a selected parent always has a strictly smaller topological
+    // height than its child, so both cursors strictly descend, and genesis is
+    // on both chains.
+    let mut removed: Vec<BlockHash> = Vec::new();
+    let mut added: Vec<BlockHash> = Vec::new();
 
-    let old_set: HashSet<BlockHash> = old_chain.iter().copied().collect();
+    let mut old_cursor = old_tip;
+    let mut new_cursor = new_tip;
+    let mut guard = 0u64;
 
-    // The first block of the new chain that the old chain also had is the fork
-    // point. Walking the new chain tip-first finds the *deepest* such block,
-    // which is what we want: everything above it on the old chain is undone.
-    let fork_point = new_chain.iter().position(|hash| old_set.contains(hash));
+    while old_cursor != new_cursor {
+        // A DAG cannot have more blocks than this; the bound exists so a
+        // malformed store cannot hang the node rather than because it is
+        // expected to be reached.
+        guard += 1;
+        if guard > MAX_REORG_WALK {
+            break;
+        }
 
-    let Some(fork_index) = fork_point else {
-        // No common block at all. Only possible if the two tips belong to
-        // different DAGs, which callers must not do.
-        return ChainReorg { removed: old_chain, added: new_chain.into_iter().rev().collect() };
-    };
+        let old_height = dag.topological_height(old_cursor);
+        let new_height = dag.topological_height(new_cursor);
 
-    let fork_hash = new_chain[fork_index];
+        if old_height >= new_height {
+            removed.push(old_cursor);
+            let Some(data) = dag.data(old_cursor) else { break };
+            if old_cursor == data.selected_parent {
+                break;
+            }
+            old_cursor = data.selected_parent;
+        } else {
+            added.push(new_cursor);
+            let Some(data) = dag.data(new_cursor) else { break };
+            if new_cursor == data.selected_parent {
+                break;
+            }
+            new_cursor = data.selected_parent;
+        }
+    }
 
-    // Old chain above the fork point, tip-first: the undo order.
-    let removed: Vec<BlockHash> =
-        old_chain.into_iter().take_while(|hash| *hash != fork_hash).collect();
-
-    // New chain above the fork point, oldest-first: the execution order.
-    let added: Vec<BlockHash> = new_chain.into_iter().take(fork_index).rev().collect();
+    // `removed` is already tip-first, the undo order. `added` was built
+    // tip-first and must be reversed into execution order.
+    added.reverse();
 
     ChainReorg { removed, added }
 }
+
+/// Upper bound on the lockstep walk, so a malformed store cannot hang a node.
+const MAX_REORG_WALK: u64 = 100_000_000;
 
 #[cfg(test)]
 mod tests {

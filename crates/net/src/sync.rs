@@ -230,10 +230,27 @@ impl<G: HeaderGate> DagSync<G> {
             return vec![Action::Disconnect(peer, "message from unknown peer")];
         }
 
-        // Only the handshake may precede the handshake.
+        // A message from a peer we have not finished handshaking with is not
+        // misbehaviour: it means our `Version` was lost in flight and the peer
+        // believes the connection is up. Re-sending ours repairs it.
+        //
+        // An earlier version penalised this and disconnected after four such
+        // messages. Under heavy packet loss that turned a single dropped
+        // handshake into a permanently broken connection, and a six-node
+        // network at 40% loss slowly disconnected itself until it could no
+        // longer converge. Handshake loss must be recoverable, because on a
+        // lossy link it is not rare, it is expected.
         let ready = self.peers[&peer].is_ready();
         if !ready && !matches!(message, Message::Version { .. } | Message::Verack) {
-            return self.penalise(peer, Misbehaviour::OutOfOrder, "message before handshake");
+            trace!(%peer, "message before handshake completed; resending version");
+            return vec![Action::Send(
+                peer,
+                Message::Version {
+                    version: PROTOCOL_VERSION,
+                    genesis: self.config.genesis,
+                    tips: self.dag.tips(),
+                },
+            )];
         }
 
         match message {
@@ -287,8 +304,24 @@ impl<G: HeaderGate> DagSync<G> {
 
         let ready: Vec<PeerId> =
             self.peers.values().filter(|p| p.is_ready()).map(|p| p.id).collect();
+        let unready: Vec<PeerId> =
+            self.peers.values().filter(|p| !p.is_ready()).map(|p| p.id).collect();
 
         let mut actions = Vec::new();
+
+        // Retry the handshake with anyone it has not completed with. On a
+        // lossy link the opening `Version` is simply lost sometimes, and
+        // without this the connection stays half-open forever.
+        for peer in unready {
+            actions.push(Action::Send(
+                peer,
+                Message::Version {
+                    version: PROTOCOL_VERSION,
+                    genesis: self.config.genesis,
+                    tips: self.dag.tips(),
+                },
+            ));
+        }
 
         if !stale.is_empty() && !ready.is_empty() {
             debug!(count = stale.len(), "re-requesting timed-out blocks");

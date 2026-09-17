@@ -10,7 +10,7 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M7: RPC** — PASSED (MetaMask half is PARTIAL, see BLOCKERS.md B-002). **M8: HARDENING** — IN PROGRESS
+**M8: HARDENING** — PASSED. **M9: RAISE THE RATE** — IN PROGRESS
 
 ## State right now
 
@@ -33,6 +33,17 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M8 GATE PASSED.** 24 simulated hours, 10 nodes, checked at twelve
+  checkpoints: 78,443 blocks mined, chain height 42,947, 79,267 reorgs
+  (deepest 13), and at every checkpoint identical DAGs, identical chains,
+  identical state roots at every height, zero orphans, zero outstanding
+  requests, and no panics. Runs in under eight minutes.
+  Five cargo-fuzz targets (message decode, header RLP, compact target,
+  transaction decode, GHOSTDAG construction) ran ~70 million iterations
+  without a crash. Nine resource-exhaustion tests bound orphan floods,
+  oversized inventories, batches and bodies, and repeated reconnects.
+  Also closed here: P-012 (real TCP transport) and the three quadratics that
+  made a long soak infeasible.
 - **M7 GATE PASSED**, with one half PARTIAL.
   `forge script --broadcast` really ran against a live node and printed
   "ONCHAIN EXECUTION COMPLETE & SUCCESSFUL", deploying an ERC-20 and
@@ -114,6 +125,17 @@ Crates that exist and what they hold:
   multi-node simulation with execution. 27 tests.
 
 More facts not to re-derive:
+- Reachability prunes on TOPOLOGICAL HEIGHT, never blue score. Blue score
+  counts blocks while fork choice compares work; they diverge as soon as
+  difficulty varies, so a blue-score prune passes every test here and is wrong
+  in production. DECISIONS.md D-038.
+- Three quadratics were removed at M8 and must not come back: reachability
+  scanning the whole past, `tips()` scanning every header, and `compute_reorg`
+  walking both chains to genesis. They took the soak from ~12 hours to 8 min.
+- An incomplete handshake must be REPAIRED (resend Version), never penalised.
+  Penalising it partitions a lossy network permanently. D-040.
+- Fuzzing: `cargo +nightly fuzz run <target>`. Targets live in `fuzz/`, which
+  is excluded from the workspace.
 - Foundry lives at $SCRATCH/tools/{forge,cast,anvil} (1.5.1). solc is there too.
   Pass solc via `--use $SOLC` and add `--offline` so forge does not try to
   fetch a compiler.
@@ -185,23 +207,23 @@ More facts not to re-derive:
 
 ## In flight
 
-M8 HARDENING: fuzzing, resource exhaustion, and a long soak.
+M9 RAISE THE RATE: 1 bps -> 10 bps.
 
 ## Exact next action
 
-1. Fuzz the block validator and the transaction decoder. `cargo-fuzz` needs
-   nightly; if unavailable, drive the same corpora through property tests
-   instead and say so rather than claiming fuzzing that did not happen.
-2. Fuzz GHOSTDAG with malformed DAGs: cycles, self-parents, duplicate parents,
-   enormous parent sets, parents that do not exist.
-3. Resource exhaustion: orphan floods, oversized messages, pool spam,
-   unbounded log ranges. The orphan pool and message limits are already
-   bounded and tested; the gaps are OPEN-PROBLEMS.md P-011 (no rate limiting)
-   and P-014 (unbounded undo journal).
-4. Consider closing P-012 (no TCP transport) first. M8's soak is otherwise
-   soaking half a system: RPC is proven on one node, convergence in
-   simulation, and the two have never run together.
-5. Gate: 24-hour 10-node soak, no divergence, no memory growth, no panics.
+1. **Recompute `k` for 10 bps.** This is the whole milestone and it must not
+   be guessed (OPEN-PROBLEMS.md P-008). Measure the propagation delay bound
+   from the M5/M8 harness at the new rate, then apply the PHANTOM paper's
+   formula. `ChainParams::testnet_10bps` currently carries the 1 bps `k` as a
+   placeholder and is documented as unusable until this is done.
+2. **Resolve P-002 before anything else ships at 10 bps.** At that rate
+   `BLOCK_GAS_LIMIT` is 3,000,000, which cannot fit a large contract
+   deployment. The three options are written up in P-002; one must be chosen,
+   not deferred again.
+3. Retune: `DEFERRED_STATE_ROOT_LAG` and the pruning window already derive
+   from the rate and need no change; verify with `ChainParams` tests.
+4. Re-run the M5, M6 and M8 gates at 10 bps.
+5. Gate: all prior gates pass at the new rate.
 
 ## Milestone ledger
 
@@ -215,8 +237,8 @@ M8 HARDENING: fuzzing, resource exhaustion, and a long soak.
 | M5  | Networking         | PASSED      |
 | M6  | The seam           | PASSED      |
 | M7  | RPC                | PASSED*     |
-| M8  | Hardening          | IN PROGRESS |
-| M9  | Raise the rate     | not started |
+| M8  | Hardening          | PASSED      |
+| M9  | Raise the rate     | IN PROGRESS |
 | M10 | Parallel execution | not started |
 
 ## Protocol reminders

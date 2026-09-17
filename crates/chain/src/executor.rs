@@ -392,6 +392,16 @@ impl ChainExecutor {
         self.height = height;
         self.tip = hash;
 
+        // Prune automatically. Undo records hold the pre-value of every
+        // account a block touched, so an unpruned journal grows without bound
+        // on a long-running node. Records older than the pruning window can
+        // never be needed: a reorg that deep is not something to unwind, it is
+        // something to resync from.
+        let window = self.params.pruning_window_blocks();
+        if height > window {
+            self.prune_journal(height - window);
+        }
+
         trace!(height, %hash, executed, deferred, gas_used, "chain block executed");
         Ok(outcome)
     }
@@ -408,6 +418,15 @@ impl ChainExecutor {
     /// How many undo records are held.
     pub fn journal_len(&self) -> usize {
         self.journal.len()
+    }
+
+    /// Total accounts covered by all held undo records.
+    ///
+    /// A closer proxy for the journal's real memory cost than its length: one
+    /// record for a block that touched a thousand accounts is far larger than
+    /// a thousand records for blocks that touched one each.
+    pub fn journal_entries(&self) -> usize {
+        self.journal.iter().map(|(_, _, record)| record.len()).sum()
     }
 }
 

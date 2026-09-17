@@ -46,3 +46,30 @@ jobs:
       - name: Node boots
         run: |
           cargo run --bin chainname-node -- --check --data-dir "$RUNNER_TEMP/chainname-data"
+
+  fuzz:
+    name: fuzz targets build and run briefly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # cargo-fuzz needs nightly and a sanitizer.
+      - name: Install nightly
+        run: rustup toolchain install nightly --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+
+      # A short run on every commit catches a target that stopped building or
+      # started crashing immediately. Long campaigns belong on a schedule, not
+      # in a pull request.
+      - name: Fuzz
+        run: |
+          for target in message_decode header_rlp compact_target \
+                        transaction_decode ghostdag_build; do
+            echo "::group::$target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=30 -rss_limit_mb=4096
+            echo "::endgroup::"
+          done

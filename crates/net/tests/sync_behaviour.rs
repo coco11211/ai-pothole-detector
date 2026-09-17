@@ -103,15 +103,35 @@ fn a_version_with_the_wrong_protocol_disconnects_immediately() {
 }
 
 #[test]
-fn data_before_the_handshake_is_penalised() {
+fn data_before_the_handshake_repairs_it_instead_of_banning() {
+    // A message from a peer we have not handshaken with means our `Version`
+    // was lost, not that the peer is hostile. Penalising it turned a single
+    // dropped handshake into a permanently broken connection on lossy links.
     let mut sync = new_sync();
     sync.on_connect(PeerId(1));
-    // Four `OutOfOrder` penalties at 25 each exhaust the starting score.
-    for _ in 0..3 {
-        assert!(sync.on_message(PeerId(1), Message::GetTips, 0).is_empty());
+
+    for _ in 0..50 {
+        let actions = sync.on_message(PeerId(1), Message::GetTips, 0);
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::Disconnect(..))),
+            "a half-open connection must not be banned"
+        );
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::Send(PeerId(1), Message::Version { .. }))),
+            "our version must be resent so the handshake can complete"
+        );
     }
-    let actions = sync.on_message(PeerId(1), Message::GetTips, 0);
-    assert!(matches!(actions.as_slice(), [Action::Disconnect(PeerId(1), _)]));
+}
+
+#[test]
+fn a_tick_retries_an_incomplete_handshake() {
+    let mut sync = new_sync();
+    sync.on_connect(PeerId(1));
+    let actions = sync.on_tick(1_000);
+    assert!(
+        actions.iter().any(|a| matches!(a, Action::Send(PeerId(1), Message::Version { .. }))),
+        "an unfinished handshake must be retried on the timer"
+    );
 }
 
 #[test]

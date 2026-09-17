@@ -1,0 +1,56 @@
+[package]
+name = "chainname-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+alloy-primitives = "1.6.1"
+alloy-rlp = "0.3.16"
+alloy-consensus = { version = "2.4.2", features = ["k256"] }
+alloy-eips = "2.4.2"
+chainname-primitives = { path = "../crates/primitives" }
+chainname-difficulty = { path = "../crates/difficulty" }
+chainname-ghostdag = { path = "../crates/ghostdag" }
+chainname-net = { path = "../crates/net" }
+chainname-pow = { path = "../crates/pow" }
+
+[[bin]]
+name = "message_decode"
+path = "fuzz_targets/message_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "header_rlp"
+path = "fuzz_targets/header_rlp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compact_target"
+path = "fuzz_targets/compact_target.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transaction_decode"
+path = "fuzz_targets/transaction_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ghostdag_build"
+path = "fuzz_targets/ghostdag_build.rs"
+test = false
+doc = false
+bench = false

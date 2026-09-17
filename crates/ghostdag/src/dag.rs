@@ -19,7 +19,7 @@
 //! Recorded as OPEN-PROBLEMS.md P-009 — a performance ceiling, not a
 //! correctness gap.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use alloy_primitives::U256;
 use chainname_difficulty::CompactTarget;
@@ -49,6 +49,15 @@ pub struct GhostdagData {
     /// of using a DAG. Redness costs a block its contribution to blue score,
     /// not its transactions.
     pub mergeset_ordered: Vec<BlockHash>,
+    /// Longest path from genesis, in blocks.
+    ///
+    /// Strictly increasing along ancestry by construction: every block is one
+    /// deeper than its deepest parent. That makes it a *sound* bound for
+    /// pruning reachability searches, which blue score is not — blue score
+    /// counts blocks while selected-parent choice compares work, so the two
+    /// can disagree whenever difficulty varies, and a prune based on it would
+    /// silently return wrong answers.
+    pub topological_height: u64,
     /// For each blue in `mergeset_blues`, how many blues sit in its anticone.
     /// Carried forward so descendants can extend the k-cluster check without
     /// recomputing it from scratch.
@@ -80,8 +89,15 @@ pub struct DagStore {
     genesis: BlockHash,
     headers: HashMap<BlockHash, Header>,
     data: HashMap<BlockHash, GhostdagData>,
-    /// Child edges, for tip discovery.
+    /// Child edges.
     children: HashMap<BlockHash, Vec<BlockHash>>,
+    /// Blocks with no children, maintained incrementally.
+    ///
+    /// Recomputing this by scanning every header was O(blocks) per call, and
+    /// it is called on every mine, every announcement and every execution
+    /// advance — which made simply building a DAG quadratic in its size.
+    /// `BTreeSet` so iteration order never depends on hashing.
+    tips: BTreeSet<BlockHash>,
     /// Memoised `(descendant, ancestor) -> bool`.
     ///
     /// A `Mutex` rather than a `RefCell`: the RPC layer shares a `DagStore`
@@ -116,6 +132,7 @@ impl DagStore {
                 mergeset_blues: Vec::new(),
                 mergeset_reds: Vec::new(),
                 mergeset_ordered: Vec::new(),
+                topological_height: 0,
                 blues_anticone_sizes: HashMap::new(),
             },
         );
@@ -126,6 +143,7 @@ impl DagStore {
             headers,
             data,
             children: HashMap::new(),
+            tips: BTreeSet::from([genesis_hash]),
             reachability: std::sync::Mutex::new(HashMap::new()),
             mergeset_size_limit,
         }
@@ -172,12 +190,7 @@ impl DagStore {
     /// order that two nodes with the same DAG always agree on. A miner takes
     /// its parents from the front of this list.
     pub fn tips(&self) -> Vec<BlockHash> {
-        let mut tips: Vec<BlockHash> = self
-            .headers
-            .keys()
-            .filter(|h| self.children.get(*h).is_none_or(Vec::is_empty))
-            .copied()
-            .collect();
+        let mut tips: Vec<BlockHash> = self.tips.iter().copied().collect();
         tips.sort_by(|a, b| self.compare_blocks(*b, *a));
         tips
     }
@@ -226,7 +239,10 @@ impl DagStore {
 
         for parent in &header.parents {
             self.children.entry(*parent).or_default().push(hash);
+            // A block with a child is no longer a tip.
+            self.tips.remove(parent);
         }
+        self.tips.insert(hash);
         self.headers.insert(hash, header);
         self.data.insert(hash, data);
         Ok(hash)
@@ -279,10 +295,14 @@ impl DagStore {
         }
         blue_work = blue_work.saturating_add(self.header_work(header));
 
+        let topological_height =
+            header.parents.iter().map(|p| self.topological_height(*p)).max().unwrap_or(0) + 1;
+
         Ok(GhostdagData {
             selected_parent,
             blue_score,
             blue_work,
+            topological_height,
             mergeset_blues,
             mergeset_reds,
             mergeset_ordered: mergeset,
@@ -474,10 +494,34 @@ impl DagStore {
         (Colour::Blue, candidate_anticone, updates)
     }
 
+    /// A block's longest path from genesis.
+    pub fn topological_height(&self, hash: BlockHash) -> u64 {
+        self.data.get(&hash).map_or(0, |d| d.topological_height)
+    }
+
     /// True if `ancestor` is in `descendant`'s past, or is `descendant`.
     ///
-    /// Memoised breadth-first search. See the module docs on why this is not
-    /// interval-based yet.
+    /// Breadth-first search over parent edges, pruned by topological height
+    /// and memoised.
+    ///
+    /// The prune is what makes this usable. Topological height strictly
+    /// increases along ancestry, so once the search reaches a block no deeper
+    /// than `ancestor`, `ancestor` cannot lie in that block's past and the
+    /// whole branch can be abandoned. Without it the search visits the entire
+    /// past on every miss, which made building a DAG quadratic in its size: a
+    /// 24-hour simulated soak would have taken about half a day of real time.
+    ///
+    /// Blue score would NOT be a sound bound here. It counts blocks while
+    /// selected-parent choice compares work, so the two disagree whenever
+    /// difficulty varies, and a prune based on it would silently return wrong
+    /// answers on exactly the chains where difficulty moved.
+    ///
+    /// The prune is applied *after* comparing the parent against `ancestor`,
+    /// so the target itself is never pruned away.
+    ///
+    /// Still not Kaspa's interval-labelled reachability, which answers in
+    /// O(1). OPEN-PROBLEMS.md P-009 stays open; this makes it affordable, not
+    /// free.
     pub fn is_ancestor_of(&self, ancestor: BlockHash, descendant: BlockHash) -> bool {
         if ancestor == descendant {
             return true;
@@ -491,34 +535,54 @@ impl DagStore {
             return *cached;
         }
 
+        let ancestor_height = self.topological_height(ancestor);
+        // A block no deeper than the one being looked for cannot contain it.
+        if self.topological_height(descendant) <= ancestor_height {
+            self.remember(descendant, ancestor, false);
+            return false;
+        }
+
         let mut seen: HashSet<BlockHash> = HashSet::new();
         let mut queue: VecDeque<BlockHash> = VecDeque::new();
         queue.push_back(descendant);
         seen.insert(descendant);
 
         let mut found = false;
-        while let Some(current) = queue.pop_front() {
+        'search: while let Some(current) = queue.pop_front() {
             let Some(header) = self.headers.get(&current) else { continue };
             for parent in &header.parents {
                 if *parent == ancestor {
                     found = true;
-                    queue.clear();
-                    break;
+                    break 'search;
+                }
+                if self.topological_height(*parent) <= ancestor_height {
+                    continue;
                 }
                 if seen.insert(*parent) {
                     queue.push_back(*parent);
                 }
             }
-            if found {
-                break;
-            }
         }
 
-        self.reachability
-            .lock()
-            .expect("reachability cache is never poisoned")
-            .insert((descendant, ancestor), found);
+        self.remember(descendant, ancestor, found);
         found
+    }
+
+    /// Caches a reachability answer, bounding the cache.
+    ///
+    /// Queries are unbounded over a node's lifetime, so the cache needs a
+    /// ceiling or a long-running node leaks. Clearing wholesale rather than
+    /// evicting individually is crude, but it costs nothing to maintain and a
+    /// cold cache is a slowdown rather than a bug.
+    fn remember(&self, descendant: BlockHash, ancestor: BlockHash, answer: bool) {
+        /// Entries held before the cache is dropped.
+        const CACHE_CAPACITY: usize = 32_768;
+
+        let mut cache = self.reachability.lock().expect("reachability cache is never poisoned");
+        if cache.len() >= CACHE_CAPACITY {
+            cache.clear();
+        }
+        cache.insert((descendant, ancestor), answer);
     }
 
     fn block_work(&self, hash: BlockHash) -> U256 {

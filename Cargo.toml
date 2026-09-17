@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "bin/*"]
+# The fuzz crate builds only under `cargo fuzz` with nightly and a sanitizer,
+# so it must not be part of the normal workspace build.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"
