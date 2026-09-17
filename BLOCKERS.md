@@ -39,7 +39,49 @@ requires `forge script` to actually run.
   `solc_bytecode_is_current`, recompiles and compares whenever solc is
   available (`CHAINNAME_SOLC` env var or `solc` on PATH), so the artifact
   cannot silently drift from `Erc20.sol`. CI installs solc for exactly this.
-- **Foundry is still absent.** The M7 gate requires `forge script` to really
-  run. Not yet attempted. If `foundryup` cannot reach its release host from
-  this environment, M7 becomes a genuine blocker and will be recorded here as
-  a new entry rather than quietly downgraded.
+**State (updated at M7): RESOLVED.** Foundry 1.5.1-stable was fetched from the
+foundry-rs releases page. `forge`, `cast` and `anvil` all run. The M7 gate was
+executed against a live node:
+
+    forge script script/Deploy.s.sol:Deploy --rpc-url http://127.0.0.1:8546 \
+      --private-key <dev key> --broadcast --slow
+    ...
+    ONCHAIN EXECUTION COMPLETE & SUCCESSFUL.
+
+The script deployed an ERC-20 and transferred 1234 tokens; both were verified
+on chain afterwards with `cast call`. `forge create` and `cast send` were also
+exercised end to end.
+
+---
+
+## B-002 - the MetaMask browser extension was not driven - PARTIAL
+
+**Milestone:** M7 gate, second half: "MetaMask connects and sends a
+transaction. Both must actually work, not approximately work."
+
+**What was done.** `crates/node/tests/rpc_compatibility.rs` reproduces
+MetaMask's connection and send sequence call for call against a live server -
+`eth_chainId`, `net_version`, `net_listening`, `web3_clientVersion`,
+`eth_blockNumber`, `eth_syncing`, `eth_accounts`, `eth_getBalance`,
+`eth_getTransactionCount` (both `latest` and `pending`),
+`eth_getBlockByNumber`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`,
+`eth_feeHistory`, `eth_estimateGas`, `eth_sendRawTransaction`,
+`eth_getTransactionByHash`, `eth_getTransactionReceipt` - and asserts every
+response carries the exact fields the extension parses. The client is
+hand-rolled over a raw socket on purpose: one sharing types with the server
+would hide precisely the mismatches this is looking for.
+
+Independently, two real third-party Ethereum clients drive the node for real:
+`forge` and `cast` (B-001).
+
+**What was not done.** The extension itself was not loaded in a browser and
+clicked through. Chromium and Playwright are available, so it is not
+impossible, but MetaMask onboarding (seed import, network add, popup-based
+transaction confirmation) is a large amount of brittle UI automation whose only
+additional signal beyond the above is whether MetaMask's own UI works - which
+is not a property of this chain.
+
+**Honest status:** the wire protocol MetaMask speaks is verified; MetaMask
+itself is not. Recorded as PARTIAL rather than passed. Closing it means
+scripting the extension in Playwright, or one person connecting MetaMask by
+hand once and reporting back.

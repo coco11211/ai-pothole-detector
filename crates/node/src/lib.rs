@@ -5,11 +5,13 @@
 //! and M5 respectively.
 
 pub mod config;
+pub mod dev;
 
 use chainname_storage::{RedbStore, StorageError};
 use tracing::info;
 
 pub use config::{ConfigError, Network, NodeConfig};
+pub use dev::{DevAccount, DevNode, dev_accounts, mining_loop};
 
 /// A booted node.
 ///

@@ -83,7 +83,12 @@ pub struct DagStore {
     /// Child edges, for tip discovery.
     children: HashMap<BlockHash, Vec<BlockHash>>,
     /// Memoised `(descendant, ancestor) -> bool`.
-    reachability: std::cell::RefCell<HashMap<(BlockHash, BlockHash), bool>>,
+    ///
+    /// A `Mutex` rather than a `RefCell`: the RPC layer shares a `DagStore`
+    /// across threads, and a `RefCell` would make the whole node `!Sync`.
+    /// Contention is negligible because queries are short and the common case
+    /// is a cache hit.
+    reachability: std::sync::Mutex<HashMap<(BlockHash, BlockHash), bool>>,
     /// Upper bound on merge-set size, a denial-of-service guard.
     mergeset_size_limit: u64,
 }
@@ -121,7 +126,7 @@ impl DagStore {
             headers,
             data,
             children: HashMap::new(),
-            reachability: std::cell::RefCell::new(HashMap::new()),
+            reachability: std::sync::Mutex::new(HashMap::new()),
             mergeset_size_limit,
         }
     }
@@ -477,7 +482,12 @@ impl DagStore {
         if ancestor == descendant {
             return true;
         }
-        if let Some(cached) = self.reachability.borrow().get(&(descendant, ancestor)) {
+        if let Some(cached) = self
+            .reachability
+            .lock()
+            .expect("reachability cache is never poisoned")
+            .get(&(descendant, ancestor))
+        {
             return *cached;
         }
 
@@ -504,7 +514,10 @@ impl DagStore {
             }
         }
 
-        self.reachability.borrow_mut().insert((descendant, ancestor), found);
+        self.reachability
+            .lock()
+            .expect("reachability cache is never poisoned")
+            .insert((descendant, ancestor), found);
         found
     }
 

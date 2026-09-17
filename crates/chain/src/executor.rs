@@ -79,6 +79,17 @@ pub struct ChainBlockOutcome {
     /// Transactions skipped because the block's gas budget ran out. They stay
     /// eligible for a later chain block.
     pub deferred: usize,
+    /// Hashes of the transactions that executed, in canonical order.
+    ///
+    /// This is the order `eth_getBlockByNumber` reports, and the index a
+    /// receipt lookup resolves against.
+    pub transaction_hashes: Vec<B256>,
+    /// Receipts for those transactions, in the same order.
+    pub receipts: Vec<ReceiptWithBloom<Receipt<Log>>>,
+    /// Timestamp of the chain block, in seconds.
+    pub timestamp_secs: u64,
+    /// The miner of the chain block itself.
+    pub miner: Address,
 }
 
 /// Executes selected-chain blocks and maintains the world state.
@@ -112,6 +123,10 @@ impl ChainExecutor {
                 base_fee_per_gas: INITIAL_BASE_FEE,
                 executed: 0,
                 deferred: 0,
+                transaction_hashes: Vec::new(),
+                receipts: Vec::new(),
+                timestamp_secs: 0,
+                miner: Address::ZERO,
             },
         );
 
@@ -272,6 +287,7 @@ impl ChainExecutor {
         let mut executed = 0usize;
         let mut deferred = 0usize;
         let mut receipts: Vec<ReceiptWithBloom<Receipt<Log>>> = Vec::new();
+        let mut transaction_hashes: Vec<B256> = Vec::new();
 
         let state = std::mem::take(&mut self.state);
         let mut evm = make_evm(state, &self.params, &ctx);
@@ -311,6 +327,7 @@ impl ChainExecutor {
                     let used = result.tx_gas_used();
                     gas_used = gas_used.saturating_add(used);
                     executed += 1;
+                    transaction_hashes.push(*tx.inner().hash());
 
                     let logs: Vec<Log> = result.logs().to_vec();
                     let receipt = Receipt {
@@ -353,6 +370,7 @@ impl ChainExecutor {
         // exactly as Ethereum computes it, so `eth_getTransactionReceipt` and
         // receipt proofs mean what clients expect.
         let receipts_root = alloy_trie::root::ordered_trie_root(&receipts);
+        let _ = &receipts;
 
         let outcome = ChainBlockOutcome {
             height,
@@ -363,6 +381,10 @@ impl ChainExecutor {
             base_fee_per_gas,
             executed,
             deferred,
+            transaction_hashes,
+            receipts,
+            timestamp_secs: ctx.timestamp_secs,
+            miner: header.miner,
         };
 
         self.journal.push((height, hash, undo));

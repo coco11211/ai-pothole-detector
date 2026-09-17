@@ -289,6 +289,58 @@ it includes it, so a block carrying one must still execute. Rejecting the block
 would let anyone invalidate a competitor's block by front-running one of its
 transactions.
 
+## D-033 - `eth_*` addresses selected-chain blocks - SETTLED
+
+`eth_getBlockByNumber` and every `blockNumber` field mean **selected-chain
+height**. It is the only sequence in a blockDAG with one block per height,
+which is what every Ethereum client assumes. DAG blocks off the selected chain
+are reachable only through `chainname_*`.
+
+The alternative - inventing a numbering covering every DAG block - would give
+two blocks the same number and break clients in ways they cannot detect.
+
+## D-034 - DAG data is additive in `eth_*`, never substitutive - SETTLED
+
+Receipts carry `blueScoreDepth` and blocks carry `blueScore`, as *extra*
+fields. No Ethereum field is removed, retyped, or repurposed. Strict clients
+ignore what they do not recognise; DAG-aware ones get the number that matters
+without a second round trip.
+
+The rule this encodes: adding a field is safe, changing one is not.
+
+## D-035 - `safe` and `finalized` resolve to the tip - OPEN-RISK
+
+There is no finality on this chain (OPEN-PROBLEMS.md P-007), so these tags
+cannot mean what they mean on Ethereum. Three options: error, resolve to the
+tip, or resolve to some depth and call it final.
+
+Chose the tip. Erroring breaks clients that request `finalized` routinely;
+picking a depth and calling it final is a lie, and it is exactly the lie that
+costs an exchange money. Resolving to the tip is at least transparent: callers
+needing settlement confidence read blue-score depth from `chainname_*` and pick
+their own threshold.
+
+Tagged OPEN-RISK because a client that trusts `finalized` will be wrong here,
+and nothing in the response tells it so.
+
+## D-036 - the node holds no keys - SETTLED
+
+`eth_accounts` returns an empty list and there is no `eth_sendTransaction`.
+Signing belongs in a wallet. A node that signs is a custody service with a
+JSON-RPC port, and dev-mode convenience is not worth building that habit into
+the client. The `--dev` chain pre-funds well-known *published* keys instead,
+and warns about it at startup.
+
+## D-037 - the float rule is absolute in consensus, explicit elsewhere - SETTLED
+
+`eth_feeHistory` must emit `gasUsedRatio` as a JSON float; the schema leaves no
+choice. Rather than relax the workspace lint, the exception is a single
+function carrying `#[allow(clippy::float_arithmetic, reason = ...)]`, computed
+from already-final integers and never fed back into state.
+
+The rule stays absolute where it matters, and every exception is visible at its
+site rather than invisible in a config file.
+
 ---
 
 # CORRECTIONS

@@ -20,6 +20,8 @@ chainname-execution  = { path = "crates/execution" }
 chainname-consensus  = { path = "crates/consensus" }
 chainname-chain      = { path = "crates/chain" }
 chainname-net        = { path = "crates/net" }
+chainname-pool       = { path = "crates/pool" }
+chainname-rpc        = { path = "crates/rpc" }
 chainname-testkit    = { path = "crates/testkit" }
 chainname-node       = { path = "crates/node" }
 
@@ -31,7 +33,7 @@ alloy-eips        = { version = "2.4.2", default-features = false, features = ["
 alloy-genesis     = { version = "2.4.2", default-features = false, features = ["std"] }
 alloy-rlp         = { version = "0.3.16", default-features = false, features = ["std"] }
 alloy-trie        = { version = "0.9.4", default-features = false, features = ["std"] }
-alloy-rpc-types-eth = { version = "2.4.2", default-features = false, features = ["std"] }
+alloy-rpc-types-eth = { version = "2.4.2", default-features = false, features = ["std", "serde"] }
 alloy-evm         = { version = "0.39.0", default-features = false, features = ["std"] }
 alloy-sol-types   = { version = "1.6.1", default-features = false, features = ["std"] }
 alloy-signer      = { version = "2.4.2", default-features = false }
@@ -51,6 +53,8 @@ parking_lot = "0.12"
 rand       = "0.9"
 tiny-keccak = { version = "2", features = ["keccak"] }
 proptest   = "1"
+jsonrpsee  = { version = "0.26", features = ["server", "client", "macros"] }
+tokio      = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 redb       = "2"
 tempfile   = "3"
 hex        = "0.4"

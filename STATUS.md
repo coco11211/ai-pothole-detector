@@ -10,7 +10,7 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M6: THE SEAM** — PASSED. **M7: RPC** — IN PROGRESS
+**M7: RPC** — PASSED (MetaMask half is PARTIAL, see BLOCKERS.md B-002). **M8: HARDENING** — IN PROGRESS
 
 ## State right now
 
@@ -33,6 +33,15 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M7 GATE PASSED**, with one half PARTIAL.
+  `forge script --broadcast` really ran against a live node and printed
+  "ONCHAIN EXECUTION COMPLETE & SUCCESSFUL", deploying an ERC-20 and
+  transferring tokens, both verified afterwards with `cast call`. `forge
+  create` and `cast send` also work end to end.
+  MetaMask's exact RPC sequence is verified call for call in
+  `crates/node/tests/rpc_compatibility.rs`, but the extension itself was not
+  driven in a browser. Recorded honestly as BLOCKERS.md B-002 PARTIAL, not as
+  a pass.
 - **M6 GATE PASSED.** Five nodes, one simulated hour, checked every five
   minutes: identical DAGs, identical selected parent chains, and identical
   state roots at every chain height. Reorgs genuinely occurred (asserted, not
@@ -92,6 +101,12 @@ Crates that exist and what they hold:
   34 tests.
 - `crates/net` — wire protocol (`message`), peer scoring with no stake
   weighting (`peer`), and `DagSync`, a pure state machine. 34 tests.
+- `crates/pool` — mempool with fee-rate eviction, per-sender nonce ordering,
+  replacement pricing. 16 tests.
+- `crates/rpc` — `Backend` (one lock over DAG + executor + pool + indexes),
+  the `eth_*` namespace, the `chainname_*` DAG namespace, jsonrpsee server.
+- `crates/node/dev` — `DevNode`: a complete single-node chain with mining and
+  RPC. `chainname-node --dev` runs it. 12 RPC compatibility tests.
 - `crates/chain` — THE SEAM. `reorg` (chain diff), `journal` (undo records),
   `bodies` (transactions + static access sets), `executor` (chain-block
   execution, deferred state root, EIP-1559 base fee). 25 tests.
@@ -99,6 +114,20 @@ Crates that exist and what they hold:
   multi-node simulation with execution. 27 tests.
 
 More facts not to re-derive:
+- Foundry lives at $SCRATCH/tools/{forge,cast,anvil} (1.5.1). solc is there too.
+  Pass solc via `--use $SOLC` and add `--offline` so forge does not try to
+  fetch a compiler.
+- A forge script needs `vm.startBroadcast()` or it broadcasts nothing. The
+  cheatcode interface can be declared inline (address
+  0x7109709ECfa91a80626fF3989D68f67F5b1DD12D) to avoid needing forge-std.
+- EIP-7825 caps a single transaction at 2^24 gas in Osaka, BELOW the 30M block
+  limit. `eth_estimateGas` must default `gas` to min(block_limit, cap) or the
+  EVM rejects the call before running it.
+- `#[tokio::test]` is single-threaded. A blocking socket read in one deadlocks
+  against an in-process server. Use
+  `#[tokio::test(flavor = "multi_thread", worker_threads = 2)]`.
+- `DagStore`'s reachability cache is a `Mutex`, not a `RefCell`, because the
+  RPC shares the node across threads and a `RefCell` makes it `!Sync`.
 - The undo record MUST come from revm's state diff (`Evm::transact`, then note
   every address in the returned diff, then commit). NOT from the static access
   set — the EVM exceeds it via CALL/CREATE/SELFDESTRUCT, and the resulting
@@ -156,23 +185,23 @@ More facts not to re-derive:
 
 ## In flight
 
-M7 RPC: full `eth_*` namespace, a `chainname_*` DAG namespace, and a
-transaction pool.
+M8 HARDENING: fuzzing, resource exhaustion, and a long soak.
 
 ## Exact next action
 
-1. `crates/rpc`: a jsonrpsee server exposing the `eth_*` namespace unchanged
-   in shape, so MetaMask, ethers, viem and Foundry work with no patches.
-   `eth_getTransactionReceipt`'s `confirmations` maps to blue-score depth.
-2. A `chainname_*` namespace for DAG data. Do NOT alter any `eth_*` response
-   shape to carry it.
-3. A transaction pool with fee-rate eviction, fed by `Message::InvTxs` /
-   `GetTxs` (the message types already exist and are currently ignored).
-4. Resolve BLOCKERS.md B-001's remaining half: install Foundry. If its release
-   host is unreachable from this environment, that becomes a real blocker and
-   must be recorded as such, not quietly downgraded.
-5. Gate: `forge script` deploys a contract against the node, and MetaMask
-   connects and sends a transaction. Both must actually work.
+1. Fuzz the block validator and the transaction decoder. `cargo-fuzz` needs
+   nightly; if unavailable, drive the same corpora through property tests
+   instead and say so rather than claiming fuzzing that did not happen.
+2. Fuzz GHOSTDAG with malformed DAGs: cycles, self-parents, duplicate parents,
+   enormous parent sets, parents that do not exist.
+3. Resource exhaustion: orphan floods, oversized messages, pool spam,
+   unbounded log ranges. The orphan pool and message limits are already
+   bounded and tested; the gaps are OPEN-PROBLEMS.md P-011 (no rate limiting)
+   and P-014 (unbounded undo journal).
+4. Consider closing P-012 (no TCP transport) first. M8's soak is otherwise
+   soaking half a system: RPC is proven on one node, convergence in
+   simulation, and the two have never run together.
+5. Gate: 24-hour 10-node soak, no divergence, no memory growth, no panics.
 
 ## Milestone ledger
 
@@ -185,8 +214,8 @@ transaction pool.
 | M4  | GHOSTDAG           | PASSED      |
 | M5  | Networking         | PASSED      |
 | M6  | The seam           | PASSED      |
-| M7  | RPC                | IN PROGRESS |
-| M8  | Hardening          | not started |
+| M7  | RPC                | PASSED*     |
+| M8  | Hardening          | IN PROGRESS |
 | M9  | Raise the rate     | not started |
 | M10 | Parallel execution | not started |
 

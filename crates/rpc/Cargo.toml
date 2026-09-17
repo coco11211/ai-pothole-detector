@@ -1,5 +1,5 @@
 [package]
-name = "chainname-node"
+name = "chainname-rpc"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,32 +10,28 @@ workspace = true
 
 [dependencies]
 chainname-primitives.workspace = true
-chainname-storage.workspace = true
-chainname-chain.workspace = true
-chainname-consensus.workspace = true
-chainname-difficulty.workspace = true
-chainname-execution.workspace = true
 chainname-ghostdag.workspace = true
+chainname-chain.workspace = true
+chainname-execution.workspace = true
 chainname-pool.workspace = true
 chainname-pow.workspace = true
-chainname-rpc.workspace = true
+chainname-difficulty.workspace = true
+alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
 alloy-genesis.workspace = true
-alloy-primitives.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
+alloy-rpc-types-eth.workspace = true
 alloy-trie.workspace = true
+alloy-evm.workspace = true
+revm.workspace = true
+jsonrpsee.workspace = true
 tokio.workspace = true
-clap.workspace = true
-eyre.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
-serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+alloy-signer.workspace = true
+alloy-signer-local.workspace = true

@@ -166,3 +166,24 @@ so a block touching a large contract's storage produces a large record.
 nothing calls it on a schedule yet, and no accounting bounds a single record's
 size. A reorg deeper than the pruned horizon cannot be undone at all — the node
 must resync — and that path is not implemented either.
+
+## P-015 - `eth_getLogs` scans blocks instead of using an index
+
+Log queries walk every block in the requested range and filter in memory. The
+range is capped at 10,000 blocks so a single query cannot be unbounded, but at
+one block per second that cap is under three hours of history, and the scan is
+linear in the range whether or not anything matches.
+
+A real implementation keeps an address-and-topic index. Dapps with event-heavy
+front ends will feel this before anything else does.
+
+## P-016 - the dev node has no peer-to-peer transport
+
+`--dev` runs a complete single-node chain: DAG, execution, pool, mining, RPC.
+It does not talk to peers, because no socket transport exists yet (P-012). The
+sync state machine is exercised only by the deterministic harness.
+
+So the RPC surface is proven against real clients on a single node, and
+convergence is proven in simulation across five nodes, but the two have never
+been proven together. Joining them is what P-012 is for, and it should happen
+before M8's soak, which is otherwise soaking half a system.
