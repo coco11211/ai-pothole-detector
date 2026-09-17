@@ -18,6 +18,7 @@ chainname-ghostdag   = { path = "crates/ghostdag" }
 chainname-storage    = { path = "crates/storage" }
 chainname-execution  = { path = "crates/execution" }
 chainname-consensus  = { path = "crates/consensus" }
+chainname-chain      = { path = "crates/chain" }
 chainname-net        = { path = "crates/net" }
 chainname-testkit    = { path = "crates/testkit" }
 chainname-node       = { path = "crates/node" }
@@ -33,6 +34,9 @@ alloy-trie        = { version = "0.9.4", default-features = false, features = ["
 alloy-rpc-types-eth = { version = "2.4.2", default-features = false, features = ["std"] }
 alloy-evm         = { version = "0.39.0", default-features = false, features = ["std"] }
 alloy-sol-types   = { version = "1.6.1", default-features = false, features = ["std"] }
+alloy-signer      = { version = "2.4.2", default-features = false }
+alloy-signer-local = { version = "2.4.2", default-features = false }
+alloy-network     = { version = "2.4.2", default-features = false }
 revm              = { version = "43.0.2", default-features = false, features = ["std"] }
 
 # --- utility ---

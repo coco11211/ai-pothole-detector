@@ -13,6 +13,9 @@ pub mod message;
 pub mod peer;
 pub mod sync;
 
-pub use message::{CodecError, MAX_BLOCK_BATCH, MAX_INV_ENTRIES, Message, PROTOCOL_VERSION};
+pub use message::{
+    BlockPayload, CodecError, MAX_BLOCK_BATCH, MAX_INV_ENTRIES, MAX_TXS_PER_BLOCK, Message,
+    PROTOCOL_VERSION,
+};
 pub use peer::{Misbehaviour, PeerId, PeerState};
 pub use sync::{Action, DagSync, SyncConfig};

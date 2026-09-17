@@ -1,5 +1,5 @@
 [package]
-name = "chainname-testkit"
+name = "chainname-chain"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,16 +11,16 @@ workspace = true
 [dependencies]
 chainname-primitives.workspace = true
 chainname-ghostdag.workspace = true
-chainname-net.workspace = true
-chainname-chain.workspace = true
 chainname-execution.workspace = true
-chainname-pow.workspace = true
-chainname-difficulty.workspace = true
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
 alloy-eips.workspace = true
-alloy-genesis.workspace = true
-alloy-signer.workspace = true
-alloy-signer-local.workspace = true
+alloy-evm.workspace = true
 alloy-trie.workspace = true
+revm.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+alloy-genesis.workspace = true
+proptest.workspace = true

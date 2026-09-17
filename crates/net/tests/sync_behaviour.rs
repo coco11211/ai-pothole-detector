@@ -7,7 +7,7 @@
 use alloy_primitives::{Address, B256};
 use chainname_ghostdag::DagStore;
 use chainname_net::{
-    Action, DagSync, Message, PROTOCOL_VERSION, PeerId, SyncConfig, sync::AcceptAll,
+    Action, BlockPayload, DagSync, Message, PROTOCOL_VERSION, PeerId, SyncConfig, sync::AcceptAll,
 };
 use chainname_primitives::{BlockHash, HEADER_VERSION, Header};
 
@@ -129,7 +129,7 @@ fn a_block_whose_parents_are_present_is_accepted_and_announced() {
 
     let block = child(&[genesis().hash()], 1);
     let hash = block.hash();
-    let actions = sync.on_message(PeerId(1), Message::Blocks(vec![block]), 0);
+    let actions = sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(block)]), 0);
 
     assert!(sync.dag().contains(hash));
     // Announced to peer 2, but not back to peer 1 who sent it.
@@ -152,7 +152,7 @@ fn a_block_with_a_missing_parent_is_held_and_its_parent_requested() {
     let orphan = child(&[missing.hash()], 2);
     let orphan_hash = orphan.hash();
 
-    let actions = sync.on_message(PeerId(1), Message::Blocks(vec![orphan]), 0);
+    let actions = sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(orphan)]), 0);
 
     assert!(!sync.dag().contains(orphan_hash), "an orphan must not enter the DAG");
     assert_eq!(sync.orphan_count(), 1);
@@ -174,10 +174,10 @@ fn an_orphan_is_admitted_once_its_parent_arrives() {
     let orphan = child(&[parent.hash()], 2);
     let orphan_hash = orphan.hash();
 
-    sync.on_message(PeerId(1), Message::Blocks(vec![orphan]), 0);
+    sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(orphan)]), 0);
     assert_eq!(sync.orphan_count(), 1);
 
-    sync.on_message(PeerId(1), Message::Blocks(vec![parent]), 0);
+    sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(parent)]), 0);
     assert_eq!(sync.orphan_count(), 0, "the orphan should have been admitted");
     assert!(sync.dag().contains(orphan_hash));
 }
@@ -200,11 +200,11 @@ fn a_long_orphan_chain_resolves_without_recursing() {
 
     // Deliver in reverse, so every block is an orphan until the last one.
     for block in chain.iter().skip(1).rev() {
-        sync.on_message(PeerId(1), Message::Blocks(vec![block.clone()]), 0);
+        sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(block.clone())]), 0);
     }
     assert_eq!(sync.orphan_count(), 499);
 
-    sync.on_message(PeerId(1), Message::Blocks(vec![chain[0].clone()]), 0);
+    sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(chain[0].clone())]), 0);
     assert_eq!(sync.orphan_count(), 0, "the whole chain should have resolved");
     assert_eq!(sync.dag().len(), 501, "genesis plus 500 blocks");
 }
@@ -220,7 +220,7 @@ fn the_orphan_pool_is_bounded() {
     for nonce in 1..(config_max as u64 + 500) {
         let unreachable_parent = B256::from(alloy_primitives::U256::from(nonce + 1_000_000));
         let orphan = child(&[unreachable_parent], nonce);
-        sync.on_message(PeerId(1), Message::Blocks(vec![orphan]), 0);
+        sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(orphan)]), 0);
     }
 
     assert!(
@@ -242,7 +242,8 @@ fn get_blocks_returns_what_we_have() {
     let actions = sync.on_message(PeerId(1), Message::GetBlocks(vec![hash]), 0);
     assert!(actions.iter().any(|a| matches!(
         a,
-        Action::Send(PeerId(1), Message::Blocks(headers)) if headers == &vec![block.clone()]
+        Action::Send(PeerId(1), Message::Blocks(blocks))
+            if blocks == &vec![BlockPayload::empty(block.clone())]
     )));
 }
 
@@ -291,7 +292,7 @@ fn a_timed_out_request_is_retried_against_a_different_peer() {
 
     let missing = child(&[genesis().hash()], 1);
     let orphan = child(&[missing.hash()], 2);
-    sync.on_message(PeerId(1), Message::Blocks(vec![orphan]), 0);
+    sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(orphan)]), 0);
     assert_eq!(sync.pending_request_count(), 1);
 
     // Well past the ten-second request timeout.
@@ -313,7 +314,7 @@ fn disconnecting_releases_what_a_peer_owed_us() {
 
     let missing = child(&[genesis().hash()], 1);
     let orphan = child(&[missing.hash()], 2);
-    sync.on_message(PeerId(1), Message::Blocks(vec![orphan]), 0);
+    sync.on_message(PeerId(1), Message::Blocks(vec![BlockPayload::empty(orphan)]), 0);
     assert_eq!(sync.pending_request_count(), 1);
 
     sync.on_disconnect(PeerId(1));
@@ -333,7 +334,11 @@ fn duplicate_blocks_are_not_treated_as_misbehaviour() {
 
     let block = child(&[genesis().hash()], 1);
     for _ in 0..1_000 {
-        let actions = sync.on_message(PeerId(1), Message::Blocks(vec![block.clone()]), 0);
+        let actions = sync.on_message(
+            PeerId(1),
+            Message::Blocks(vec![BlockPayload::empty(block.clone())]),
+            0,
+        );
         assert!(
             !actions.iter().any(|a| matches!(a, Action::Disconnect(..))),
             "an honest peer was disconnected for relaying a block twice"

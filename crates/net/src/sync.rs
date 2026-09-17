@@ -28,7 +28,7 @@ use chainname_primitives::{BlockHash, Header};
 use tracing::{debug, trace};
 
 use crate::{
-    message::{MAX_BLOCK_BATCH, MAX_INV_ENTRIES, Message, PROTOCOL_VERSION},
+    message::{BlockPayload, MAX_BLOCK_BATCH, MAX_INV_ENTRIES, Message, PROTOCOL_VERSION},
     peer::{Misbehaviour, PeerId, PeerState},
 };
 
@@ -120,6 +120,13 @@ pub struct DagSync<G> {
     waiting_on: HashMap<BlockHash, BTreeSet<BlockHash>>,
     /// Hashes requested from some peer, with the time of the request.
     requested: HashMap<BlockHash, (PeerId, u64)>,
+    /// Block bodies, as opaque EIP-2718 transaction envelopes.
+    ///
+    /// Held here rather than in the DAG because the DAG is about topology and
+    /// a header is two hundred bytes while a body can be megabytes. Decoding
+    /// and sender recovery happen above this layer, where the cost can be
+    /// charged to somebody.
+    bodies: HashMap<BlockHash, Vec<alloy_primitives::Bytes>>,
     /// Blocks accepted since the last drain, for diagnostics and tests.
     accepted: Vec<BlockHash>,
     /// Rotating offset for spreading retries across peers.
@@ -138,6 +145,7 @@ impl<G: HeaderGate> DagSync<G> {
             orphan_order: VecDeque::new(),
             waiting_on: HashMap::new(),
             requested: HashMap::new(),
+            bodies: HashMap::new(),
             accepted: Vec::new(),
             retry_cursor: 0,
         }
@@ -170,6 +178,11 @@ impl<G: HeaderGate> DagSync<G> {
         self.requested.len()
     }
 
+    /// A block's transactions, as opaque EIP-2718 envelopes.
+    pub fn body(&self, hash: BlockHash) -> &[alloy_primitives::Bytes] {
+        self.bodies.get(&hash).map_or(&[], Vec::as_slice)
+    }
+
     /// Hashes accepted since the last call, clearing the buffer.
     pub fn drain_accepted(&mut self) -> Vec<BlockHash> {
         std::mem::take(&mut self.accepted)
@@ -196,9 +209,10 @@ impl<G: HeaderGate> DagSync<G> {
     }
 
     /// Announces a locally mined block.
-    pub fn on_local_block(&mut self, header: Header) -> Vec<Action> {
-        let hash = header.hash();
-        if self.dag.add_block(header).is_ok() {
+    pub fn on_local_block(&mut self, block: BlockPayload) -> Vec<Action> {
+        let hash = block.hash();
+        self.bodies.insert(hash, block.transactions);
+        if self.dag.add_block(block.header).is_ok() {
             self.accepted.push(hash);
             let mut actions = self.announce(hash, None);
             // A locally mined block can be the parent an orphan was waiting
@@ -238,7 +252,7 @@ impl<G: HeaderGate> DagSync<G> {
             Message::Tips(tips) => self.request_unknown(peer, tips, now_ms),
             Message::InvBlocks(hashes) => self.on_inv_blocks(peer, hashes, now_ms),
             Message::GetBlocks(hashes) => self.on_get_blocks(peer, hashes),
-            Message::Blocks(headers) => self.on_blocks(peer, headers, now_ms),
+            Message::Blocks(blocks) => self.on_blocks(peer, blocks, now_ms),
             // Transaction relay is wired at M7 with the mempool. Until then the
             // messages parse and are ignored rather than being a protocol error,
             // so a newer peer talking to an older one is not disconnected.
@@ -346,27 +360,33 @@ impl<G: HeaderGate> DagSync<G> {
     }
 
     fn on_get_blocks(&mut self, peer: PeerId, hashes: Vec<BlockHash>) -> Vec<Action> {
-        let headers: Vec<Header> = hashes
+        let blocks: Vec<BlockPayload> = hashes
             .iter()
             .take(MAX_BLOCK_BATCH)
-            .filter_map(|hash| self.dag.header(*hash).cloned())
+            .filter_map(|hash| {
+                self.dag.header(*hash).cloned().map(|header| BlockPayload {
+                    header,
+                    transactions: self.bodies.get(hash).cloned().unwrap_or_default(),
+                })
+            })
             .collect();
 
-        if headers.is_empty() {
+        if blocks.is_empty() {
             return Vec::new();
         }
         if let Some(state) = self.peers.get_mut(&peer) {
-            for header in &headers {
-                state.note_known(header.hash());
+            for block in &blocks {
+                state.note_known(block.hash());
             }
         }
-        vec![Action::Send(peer, Message::Blocks(headers))]
+        vec![Action::Send(peer, Message::Blocks(blocks))]
     }
 
-    fn on_blocks(&mut self, peer: PeerId, headers: Vec<Header>, now_ms: u64) -> Vec<Action> {
+    fn on_blocks(&mut self, peer: PeerId, blocks: Vec<BlockPayload>, now_ms: u64) -> Vec<Action> {
         let mut actions = Vec::new();
 
-        for header in headers {
+        for block in blocks {
+            let BlockPayload { header, transactions } = block;
             let hash = header.hash();
             self.requested.remove(&hash);
             if let Some(state) = self.peers.get_mut(&peer) {
@@ -397,6 +417,10 @@ impl<G: HeaderGate> DagSync<G> {
                 continue;
             }
 
+            // Store the body before admitting: once the header is in the DAG
+            // the block is executable, and a body arriving second would be a
+            // race no caller can defend against.
+            self.bodies.insert(hash, transactions);
             actions.extend(self.admit(header, peer, now_ms));
         }
 

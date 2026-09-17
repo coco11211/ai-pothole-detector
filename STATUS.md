@@ -10,7 +10,7 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M5: NETWORKING** — PASSED (simulated transport; see C-008/P-012). **M6: THE SEAM** — IN PROGRESS
+**M6: THE SEAM** — PASSED. **M7: RPC** — IN PROGRESS
 
 ## State right now
 
@@ -33,6 +33,13 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M6 GATE PASSED.** Five nodes, one simulated hour, checked every five
+  minutes: identical DAGs, identical selected parent chains, and identical
+  state roots at every chain height. Reorgs genuinely occurred (asserted, not
+  assumed) and the undo journal was exercised. Also green under 25% packet
+  loss, under 900-3000ms latency, and across eight seeds. Execution is
+  reproducible from the seed, and a separate test asserts the state actually
+  changed so agreement is not vacuous.
 - **M5 GATE PASSED.** Five nodes converge on identical DAG state from a cold
   start and stay converged across thirty simulated minutes, checked every
   minute, under 2% packet loss and 50-250ms latency. Also green: 25% packet
@@ -85,10 +92,22 @@ Crates that exist and what they hold:
   34 tests.
 - `crates/net` — wire protocol (`message`), peer scoring with no stake
   weighting (`peer`), and `DagSync`, a pure state machine. 34 tests.
-- `crates/testkit` — seeded LCG and the deterministic multi-node simulation.
-  16 tests.
+- `crates/chain` — THE SEAM. `reorg` (chain diff), `journal` (undo records),
+  `bodies` (transactions + static access sets), `executor` (chain-block
+  execution, deferred state root, EIP-1559 base fee). 25 tests.
+- `crates/testkit` — seeded LCG, real secp256k1 wallets, and the deterministic
+  multi-node simulation with execution. 27 tests.
 
 More facts not to re-derive:
+- The undo record MUST come from revm's state diff (`Evm::transact`, then note
+  every address in the returned diff, then commit). NOT from the static access
+  set — the EVM exceeds it via CALL/CREATE/SELFDESTRUCT, and the resulting
+  corruption only shows up after a reorg. DECISIONS.md D-029.
+- The static access set is for ORDERING ONLY. Never for state.
+- Block bodies travel with headers (`BlockPayload`), because a header in the
+  DAG is immediately executable. D-030.
+- The net layer never decodes transactions; recovery happens above it. D-031.
+- An unexecutable transaction is skipped, never fatal. D-032, P-013.
 - `DagSync` is a PURE STATE MACHINE. No I/O, no clock (time is a parameter),
   no sockets. Do not "helpfully" give it a tokio runtime. This is what makes
   the simulation deterministic and the bugs reproducible. DECISIONS.md D-024.
@@ -137,23 +156,23 @@ More facts not to re-derive:
 
 ## In flight
 
-M6 THE SEAM: wire GHOSTDAG ordering into execution.
+M7 RPC: full `eth_*` namespace, a `chainname_*` DAG namespace, and a
+transaction pool.
 
 ## Exact next action
 
-1. `crates/node`: the seam itself. On each DAG change, recompute the virtual
-   selected parent chain and emit a `ChainReorg { removed, added }`.
-2. For each added chain block: build the base sequence
-   (`ghostdag::ordering::base_sequence`), deduplicate, apply
-   `layer_and_sort`, then execute through `chainname_execution` with
-   `set_beneficiary` per transaction (the merged block's own miner).
-3. Deferred state root: store `(height -> state_root, receipts_root,
-   gas_used)` and have a header at height N carry height N-D's values.
-   D = 20 at 1 bps.
-4. Reorg: an undo journal per executed chain block, replayed in reverse.
-   NOT re-execution from genesis.
-5. Gate: 5-node harness, 1 hour, induced reorgs, all nodes agree on the state
-   root at every chain height.
+1. `crates/rpc`: a jsonrpsee server exposing the `eth_*` namespace unchanged
+   in shape, so MetaMask, ethers, viem and Foundry work with no patches.
+   `eth_getTransactionReceipt`'s `confirmations` maps to blue-score depth.
+2. A `chainname_*` namespace for DAG data. Do NOT alter any `eth_*` response
+   shape to carry it.
+3. A transaction pool with fee-rate eviction, fed by `Message::InvTxs` /
+   `GetTxs` (the message types already exist and are currently ignored).
+4. Resolve BLOCKERS.md B-001's remaining half: install Foundry. If its release
+   host is unreachable from this environment, that becomes a real blocker and
+   must be recorded as such, not quietly downgraded.
+5. Gate: `forge script` deploys a contract against the node, and MetaMask
+   connects and sends a transaction. Both must actually work.
 
 ## Milestone ledger
 
@@ -165,8 +184,8 @@ M6 THE SEAM: wire GHOSTDAG ordering into execution.
 | M3  | PoW and blocks     | PASSED      |
 | M4  | GHOSTDAG           | PASSED      |
 | M5  | Networking         | PASSED      |
-| M6  | The seam           | IN PROGRESS |
-| M7  | RPC                | not started |
+| M6  | The seam           | PASSED      |
+| M7  | RPC                | IN PROGRESS |
 | M8  | Hardening          | not started |
 | M9  | Raise the rate     | not started |
 | M10 | Parallel execution | not started |

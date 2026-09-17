@@ -241,6 +241,54 @@ announcement for a *tip* is never recovered by that mechanism.
 Asking every peer for its tips on a timer closes the hole, and is what makes
 convergence eventual rather than merely probable.
 
+## D-029 — the undo record is built from revm's state diff, not the access set — SETTLED
+
+`ChainExecutor` calls `Evm::transact` rather than `transact_commit`, notes the
+pre-value of every address in the returned diff, and only then commits.
+
+An earlier version built the undo record from the transaction's *statically
+declared* access set. That set is precisely the one the EVM is free to exceed:
+a `CALL` to a computed address, a `CREATE`, a `SELFDESTRUCT` all touch accounts
+nothing declared. Rolling back from that record would have left those accounts
+at their post-execution values, and the divergence would have surfaced only
+after a reorg, as a state root mismatch with no proximate cause.
+
+The static access set is for **ordering** only. The revm diff is authoritative
+for **state**. Conflating the two is a subtle and expensive mistake.
+
+## D-030 — block bodies travel with their headers — SETTLED
+
+`Message::Blocks` carries `BlockPayload { header, transactions }`, with
+transactions as opaque EIP-2718 envelopes.
+
+The alternative — announcing headers and fetching bodies separately — is what
+Ethereum does and is better under bandwidth pressure. It is rejected here
+because a header in the DAG is immediately executable: the moment a block joins
+the DAG it may enter a merge set, and a body arriving second would be a race
+that no caller could defend against. Bodies arriving with headers makes "in the
+DAG" and "executable" the same condition.
+
+Revisit if block sizes make this expensive; it is a protocol change, so not
+cheap to reverse.
+
+## D-031 — the network layer never decodes transactions — SETTLED
+
+`DagSync` stores bodies as opaque bytes. Decoding and sender recovery — which
+is an elliptic curve operation per transaction, by far the most expensive thing
+on the receive path — happen above it.
+
+Keeping that cost out of the network layer means a peer cannot force
+unbounded signature verification simply by sending a large block; the work
+happens once, after the block has been accepted into the DAG, where it can be
+attributed and bounded.
+
+## D-032 — an unexecutable transaction is skipped, not fatal — SETTLED
+
+See OPEN-PROBLEMS.md P-013. A miner cannot know a transaction's validity when
+it includes it, so a block carrying one must still execute. Rejecting the block
+would let anyone invalidate a competitor's block by front-running one of its
+transactions.
+
 ---
 
 # CORRECTIONS

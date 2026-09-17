@@ -12,6 +12,7 @@
 //! Encoding is RLP with a one-byte discriminant, so an unknown message type is
 //! a clean parse error rather than a misinterpreted payload.
 
+use alloy_primitives::Bytes;
 use alloy_rlp::{Decodable, Encodable, Error as RlpError, Header as RlpHeader};
 use chainname_primitives::{BlockHash, Header};
 
@@ -28,6 +29,41 @@ pub const MAX_INV_ENTRIES: usize = 512;
 
 /// Largest number of blocks a peer may send in one batch response.
 pub const MAX_BLOCK_BATCH: usize = 128;
+
+/// Largest number of transactions in one block body.
+///
+/// A body arrives before its transactions can be validated, so this bounds the
+/// work a peer can force with a single message.
+pub const MAX_TXS_PER_BLOCK: usize = 8_192;
+
+/// A block as it travels: a header plus its transactions.
+///
+/// Transactions are carried as opaque EIP-2718 envelopes, exactly as Ethereum
+/// does. The network layer never decodes them — decoding and sender recovery
+/// are validation concerns and belong where the work can be charged to
+/// somebody, not on the receive path.
+#[derive(Debug, Clone, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+pub struct BlockPayload {
+    /// The block header.
+    pub header: Header,
+    /// EIP-2718 encoded transactions, in the order the miner chose.
+    ///
+    /// Not the execution order: that is derived from the merge set which
+    /// eventually contains this block.
+    pub transactions: Vec<Bytes>,
+}
+
+impl BlockPayload {
+    /// A block with no transactions.
+    pub fn empty(header: Header) -> Self {
+        Self { header, transactions: Vec::new() }
+    }
+
+    /// This block's hash.
+    pub fn hash(&self) -> BlockHash {
+        self.header.hash()
+    }
+}
 
 /// Message type discriminants. Stable: changing one is a protocol break.
 mod tag {
@@ -71,8 +107,8 @@ pub enum Message {
     InvBlocks(Vec<BlockHash>),
     /// Requests block headers by hash.
     GetBlocks(Vec<BlockHash>),
-    /// Delivers block headers.
-    Blocks(Vec<Header>),
+    /// Delivers blocks: headers with their transactions.
+    Blocks(Vec<BlockPayload>),
     /// Announces transactions the sender holds.
     InvTxs(Vec<BlockHash>),
     /// Requests transactions by hash.
@@ -130,7 +166,7 @@ impl Message {
             | Self::GetBlocks(hashes)
             | Self::InvTxs(hashes)
             | Self::GetTxs(hashes) => hashes.encode(&mut out),
-            Self::Blocks(headers) => headers.encode(&mut out),
+            Self::Blocks(blocks) => blocks.encode(&mut out),
         }
         out
     }
@@ -163,9 +199,12 @@ impl Message {
             tag::INV_TXS => Self::InvTxs(decode_hashes(buf, "invtxs")?),
             tag::GET_TXS => Self::GetTxs(decode_hashes(buf, "gettxs")?),
             tag::BLOCKS => {
-                let headers = Vec::<Header>::decode(buf)?;
-                check_len(headers.len(), MAX_BLOCK_BATCH, "blocks")?;
-                Self::Blocks(headers)
+                let blocks = Vec::<BlockPayload>::decode(buf)?;
+                check_len(blocks.len(), MAX_BLOCK_BATCH, "blocks")?;
+                for block in &blocks {
+                    check_len(block.transactions.len(), MAX_TXS_PER_BLOCK, "block.transactions")?;
+                }
+                Self::Blocks(blocks)
             }
             other => return Err(CodecError::UnknownTag(other)),
         };
@@ -281,7 +320,10 @@ mod tests {
         roundtrip(&Message::Tips(hashes(2)));
         roundtrip(&Message::InvBlocks(hashes(5)));
         roundtrip(&Message::GetBlocks(hashes(5)));
-        roundtrip(&Message::Blocks(vec![header(1), header(2)]));
+        roundtrip(&Message::Blocks(vec![
+            BlockPayload::empty(header(1)),
+            BlockPayload { header: header(2), transactions: vec![Bytes::from_static(b"tx")] },
+        ]));
         roundtrip(&Message::InvTxs(hashes(4)));
         roundtrip(&Message::GetTxs(hashes(4)));
     }
@@ -314,8 +356,9 @@ mod tests {
 
     #[test]
     fn oversized_block_batches_are_rejected() {
-        let headers: Vec<Header> = (0..=MAX_BLOCK_BATCH as u64).map(header).collect();
-        let bytes = Message::Blocks(headers).encode_to_vec();
+        let blocks: Vec<BlockPayload> =
+            (0..=MAX_BLOCK_BATCH as u64).map(|n| BlockPayload::empty(header(n))).collect();
+        let bytes = Message::Blocks(blocks).encode_to_vec();
         assert!(matches!(
             Message::decode_from_slice(&bytes),
             Err(CodecError::TooManyEntries { .. })

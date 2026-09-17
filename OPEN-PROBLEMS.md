@@ -130,3 +130,39 @@ no TCP framing, handshake, or backpressure code has been written or tested.
 That code must exist before M8's soak test means anything, and before M7 can
 be exercised against a real client. Planned to land alongside the RPC server at
 M7, which introduces an async runtime anyway.
+
+## P-013 — deferred execution means blocks can carry unexecutable transactions
+
+A miner includes transactions before anyone knows which merge set will contain
+them, so it cannot know whether a transaction will still be valid when it
+executes: the nonce may have been consumed, or the sender drained, by a
+transaction in a block it had never seen.
+
+A block carrying such a transaction is therefore **not invalid**. The executor
+skips the transaction and continues. This is the only workable rule — rejecting
+the block would let anyone invalidate a competitor's block by front-running one
+of its transactions.
+
+The consequence is that transaction inclusion is not free to the network: a
+miner earns nothing from a transaction that turns out to be unexecutable, but
+the block still had to be propagated and validated. There is no fee for
+inclusion, only for execution, so spam that is cheap to produce and expensive
+to relay has no economic brake. Kaspa does not have this problem, because a
+UTXO transaction's validity is checkable against a known set at inclusion time.
+
+Bounding this needs either a small inclusion fee charged regardless of outcome,
+or validation against the selected parent's state at mining time (which
+reintroduces some of the coupling deferred execution was meant to remove).
+Neither is chosen. It must be resolved before the chain carries anything worth
+spamming.
+
+## P-014 — the undo journal is unbounded in principle
+
+`ChainExecutor` keeps one undo record per executed chain block and prunes only
+when told to. The record holds the pre-value of every account a block touched,
+so a block touching a large contract's storage produces a large record.
+
+`prune_journal` exists and the pruning horizon is the finality window, but
+nothing calls it on a schedule yet, and no accounting bounds a single record's
+size. A reorg deeper than the pruned horizon cannot be undone at all — the node
+must resync — and that path is not implemented either.

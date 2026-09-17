@@ -8,13 +8,19 @@
 //! so two events scheduled for the same millisecond always fire in the same
 //! order — which is what makes the whole run reproducible.
 
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashSet};
 
+use alloy_consensus::{TxEnvelope, transaction::SignerRecoverable};
+use alloy_eips::eip2718::Decodable2718;
+use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, U256};
+use chainname_chain::{BodyStore, ChainExecutor, ChainTx, compute_reorg};
 use chainname_difficulty::CompactTarget;
+use chainname_execution::load_genesis;
 use chainname_ghostdag::DagStore;
-use chainname_net::{Action, DagSync, Message, PeerId, SyncConfig, sync::HeaderGate};
+use chainname_net::{Action, BlockPayload, DagSync, Message, PeerId, SyncConfig, sync::HeaderGate};
 use chainname_pow::{DoubleKeccak256, PowHash};
+use chainname_primitives::ChainParams;
 use chainname_primitives::{BlockHash, HEADER_VERSION, Header};
 
 use crate::rng::Lcg;
@@ -90,6 +96,12 @@ pub struct SimConfig {
     pub link: LinkQuality,
     /// How often each node runs its periodic work.
     pub tick_interval_ms: u64,
+    /// Transactions a node puts in each block it mines.
+    ///
+    /// Kept low deliberately. The gate is about *agreement* on state roots, and
+    /// a heavy transaction load would make signature recovery, not consensus,
+    /// the thing being measured.
+    pub txs_per_block: usize,
 }
 
 impl Default for SimConfig {
@@ -102,6 +114,7 @@ impl Default for SimConfig {
             block_interval_ms: 1_000,
             link: LinkQuality::default(),
             tick_interval_ms: 2_000,
+            txs_per_block: 2,
         }
     }
 }
@@ -135,10 +148,26 @@ impl PartialOrd for Event {
     }
 }
 
+/// Wallets owned by each node.
+///
+/// Disjoint per node so nonces never collide: only one node ever creates
+/// transactions for a given account, so its local counter is authoritative
+/// without any coordination.
+const WALLETS_PER_NODE: u64 = 4;
+
+/// Starting balance for every test wallet, in wei.
+const WALLET_BALANCE_WEI: u128 = 1_000_000_000_000_000_000_000;
+
 /// One simulated node.
 struct SimNode {
     sync: DagSync<StructureAndPow>,
     miner: Address,
+    executor: ChainExecutor,
+    bodies: BodyStore,
+    /// Next nonce for each wallet this node owns.
+    nonces: BTreeMap<Address, u64>,
+    /// The wallets this node owns.
+    wallets: Vec<crate::wallet::Wallet>,
 }
 
 /// A running simulation.
@@ -155,6 +184,10 @@ pub struct Simulation {
     pub delivered: u64,
     /// Blocks mined across all nodes.
     pub mined: u64,
+    /// Chain reorganisations observed across all nodes.
+    pub reorgs: u64,
+    /// The deepest reorg seen, in chain blocks undone.
+    pub deepest_reorg: usize,
     /// When false, `Mine` events are dropped and not rescheduled. Used by
     /// [`Simulation::quiesce`].
     mining_enabled: bool,
@@ -205,18 +238,44 @@ impl Simulation {
     pub fn new(config: SimConfig) -> Self {
         let genesis = sim_genesis();
         let genesis_hash = genesis.hash();
+        let params = ChainParams::testnet_1bps();
+
+        // Every node starts from the same genesis allocation, so a state root
+        // divergence can only come from execution, never from setup.
+        let wallet_count = config.nodes as u64 * WALLETS_PER_NODE;
+        let mut alloc = Genesis::default();
+        for index in 0..wallet_count {
+            alloc.alloc.insert(
+                crate::wallet::Wallet::from_index(index).address(),
+                GenesisAccount { balance: U256::from(WALLET_BALANCE_WEI), ..Default::default() },
+            );
+        }
 
         let nodes: Vec<SimNode> = (0..config.nodes)
-            .map(|i| SimNode {
-                sync: DagSync::new(
-                    DagStore::new(genesis.clone(), config.k, config.mergeset_limit),
-                    StructureAndPow,
-                    SyncConfig::new(genesis_hash),
-                ),
-                // Distinct miner addresses, so two nodes mining on the same
-                // tips at the same instant still produce different blocks --
-                // as they would in reality.
-                miner: Address::repeat_byte(u8::try_from(i % 255).expect("fits") + 1),
+            .map(|i| {
+                let base = i as u64 * WALLETS_PER_NODE;
+                let wallets: Vec<crate::wallet::Wallet> = (base..base + WALLETS_PER_NODE)
+                    .map(crate::wallet::Wallet::from_index)
+                    .collect();
+                SimNode {
+                    sync: DagSync::new(
+                        DagStore::new(genesis.clone(), config.k, config.mergeset_limit),
+                        StructureAndPow,
+                        SyncConfig::new(genesis_hash),
+                    ),
+                    // Distinct miner addresses, so two nodes mining on the same
+                    // tips at the same instant still produce different blocks --
+                    // as they would in reality.
+                    miner: Address::repeat_byte(u8::try_from(i % 255).expect("fits") + 1),
+                    executor: ChainExecutor::new(
+                        params.clone(),
+                        load_genesis(&alloc).expect("genesis loads"),
+                        genesis_hash,
+                    ),
+                    bodies: BodyStore::new(),
+                    nonces: BTreeMap::new(),
+                    wallets,
+                }
             })
             .collect();
 
@@ -230,6 +289,8 @@ impl Simulation {
             dropped: 0,
             delivered: 0,
             mined: 0,
+            reorgs: 0,
+            deepest_reorg: 0,
             mining_enabled: true,
             last_change_ms: GENESIS_MS,
         };
@@ -267,20 +328,26 @@ impl Simulation {
     /// A one-line-per-node summary, for diagnosing a stalled run.
     pub fn diagnostics(&self) -> String {
         let mut out = format!(
-            "t={}ms mined={} delivered={} dropped={} last_change={}ms ago\n",
+            "t={}ms mined={} delivered={} dropped={} reorgs={} deepest={} \
+             last_change={}ms ago\n",
             self.now_ms - GENESIS_MS,
             self.mined,
             self.delivered,
             self.dropped,
+            self.reorgs,
+            self.deepest_reorg,
             self.now_ms.saturating_sub(self.last_change_ms),
         );
         for (i, node) in self.nodes.iter().enumerate() {
             out.push_str(&format!(
-                "  node {i}: blocks={} orphans={} pending={} peers={} tip={}\n",
+                "  node {i}: blocks={} orphans={} pending={} peers={} height={} \
+                 root={} tip={}\n",
                 node.sync.dag().len(),
                 node.sync.orphan_count(),
                 node.sync.pending_request_count(),
                 node.sync.peer_count(),
+                node.executor.height(),
+                node.executor.state_root(),
                 node.sync.dag().virtual_selected_parent(),
             ));
         }
@@ -410,16 +477,107 @@ impl Simulation {
             return;
         }
 
+        let transactions = self.make_transactions(node);
         self.mined += 1;
-        let actions = self.nodes[node].sync.on_local_block(header);
+        let actions = self.nodes[node].sync.on_local_block(BlockPayload { header, transactions });
         self.dispatch(node, actions);
         self.note_changes(node);
     }
 
-    /// Records that a node's DAG changed, for quiescence detection.
+    /// Signs transactions for a block this node is about to mine.
+    ///
+    /// Each node draws only on wallets it owns, so nonces need no coordination
+    /// and never collide between nodes.
+    fn make_transactions(&mut self, node: usize) -> Vec<alloy_primitives::Bytes> {
+        let count = self.config.txs_per_block;
+        if count == 0 {
+            return Vec::new();
+        }
+        let chain_id = ChainParams::testnet_1bps().chain_id;
+
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            let wallet_index = usize::try_from(self.rng.below(WALLETS_PER_NODE))
+                .expect("value is below WALLETS_PER_NODE");
+            // The recipient is drawn from every wallet in the network, so
+            // transactions genuinely cross node boundaries and a divergence in
+            // one node's execution shows up in another node's balances.
+            let total_wallets = self.nodes.len() as u64 * WALLETS_PER_NODE;
+            let recipient =
+                crate::wallet::Wallet::from_index(self.rng.below(total_wallets)).address();
+            let value = self.rng.between(1, 1_000);
+
+            let sim_node = &mut self.nodes[node];
+            let wallet = sim_node.wallets[wallet_index].clone();
+            let nonce = sim_node.nonces.entry(wallet.address()).or_insert(0);
+            let this_nonce = *nonce;
+            *nonce += 1;
+
+            out.push(wallet.signed_transfer(
+                chain_id,
+                this_nonce,
+                recipient,
+                value,
+                // Comfortably above any base fee this simulation reaches.
+                100_000_000_000,
+                1,
+            ));
+        }
+        out
+    }
+
+    /// Absorbs newly accepted blocks and advances execution.
+    ///
+    /// Bodies arrive in the same message as their headers, so a block in the
+    /// DAG always has its body. Decoding and sender recovery happen here,
+    /// above the network layer, which is where the cost belongs.
     fn note_changes(&mut self, node: usize) {
-        if !self.nodes[node].sync.drain_accepted().is_empty() {
-            self.last_change_ms = self.now_ms;
+        let accepted = self.nodes[node].sync.drain_accepted();
+        if accepted.is_empty() {
+            return;
+        }
+        self.last_change_ms = self.now_ms;
+
+        for hash in accepted {
+            let encoded: Vec<alloy_primitives::Bytes> = self.nodes[node].sync.body(hash).to_vec();
+            let mut txs: Vec<ChainTx> = Vec::with_capacity(encoded.len());
+            for bytes in &encoded {
+                // A transaction that will not decode or whose signature will
+                // not recover contributes nothing and is dropped. It cannot be
+                // executed, and rejecting the whole block for it would let one
+                // malformed transaction censor every other transaction in it.
+                let Ok(envelope) = TxEnvelope::decode_2718(&mut bytes.as_ref()) else {
+                    continue;
+                };
+                let Ok(signer) = envelope.recover_signer() else { continue };
+                txs.push(ChainTx::new_unchecked(envelope, signer));
+            }
+            self.nodes[node].bodies.insert(hash, txs);
+        }
+
+        self.advance_execution(node);
+    }
+
+    /// Brings a node's execution up to its DAG's selected parent chain.
+    fn advance_execution(&mut self, node: usize) {
+        let sim_node = &mut self.nodes[node];
+        let dag = sim_node.sync.dag();
+        let new_tip = dag.virtual_selected_parent();
+        if new_tip == sim_node.executor.tip() {
+            return;
+        }
+        let reorg = compute_reorg(dag, sim_node.executor.tip(), new_tip);
+        let depth = reorg.depth();
+        if let Err(error) =
+            sim_node.executor.apply_reorg(dag, &sim_node.bodies, &reorg.removed, &reorg.added)
+        {
+            // A failure here is a bug in the seam, not a recoverable condition.
+            // Surfacing it loudly beats silently diverging.
+            panic!("node {node}: execution failed applying reorg: {error}");
+        }
+        if depth > 0 {
+            self.reorgs += 1;
+            self.deepest_reorg = self.deepest_reorg.max(depth);
         }
     }
 
@@ -523,6 +681,51 @@ impl Simulation {
             }
         }
         seen
+    }
+
+    /// A node's executed chain height.
+    pub fn executed_height(&self, node: usize) -> u64 {
+        self.nodes[node].executor.height()
+    }
+
+    /// A node's state root at the current executed tip.
+    pub fn state_root(&self, node: usize) -> B256 {
+        self.nodes[node].executor.state_root()
+    }
+
+    /// A node's recorded state root at a given chain height.
+    pub fn state_root_at(&self, node: usize, height: u64) -> Option<B256> {
+        self.nodes[node].executor.result_at(height).map(|r| r.state_root)
+    }
+
+    /// Checks every node agrees on the state root at every chain height they
+    /// have both executed.
+    ///
+    /// This is the M6 gate. DAG agreement alone is not enough: two nodes can
+    /// hold identical blocks and still disagree on state if the ordering rule,
+    /// the fee attribution, or the reorg rollback is wrong.
+    pub fn state_divergence(&self) -> Option<String> {
+        for node in 1..self.nodes.len() {
+            let height = self.executed_height(0).min(self.executed_height(node));
+            for h in 0..=height {
+                let a = self.state_root_at(0, h);
+                let b = self.state_root_at(node, h);
+                if a != b {
+                    return Some(format!(
+                        "node {node} disagrees with node 0 on the state root at height {h}: \
+                         {a:?} vs {b:?}"
+                    ));
+                }
+            }
+            if self.executed_height(0) != self.executed_height(node) {
+                return Some(format!(
+                    "node {node} executed to height {} but node 0 reached {}",
+                    self.executed_height(node),
+                    self.executed_height(0)
+                ));
+            }
+        }
+        None
     }
 
     /// Checks every node agrees on the DAG and on the chain it selects.

@@ -93,6 +93,16 @@ impl WorldState {
         self.accounts.insert(address, account);
     }
 
+    /// Removes an account entirely.
+    ///
+    /// Used by the undo journal to reverse an account that a chain block
+    /// created. Code is deliberately left in place: it is content-addressed by
+    /// hash and may be shared with other accounts, so removing it here could
+    /// orphan a live reference.
+    pub fn remove_account(&mut self, address: Address) {
+        self.accounts.remove(&address);
+    }
+
     /// Registers contract code so it can be resolved by hash.
     pub fn insert_code(&mut self, code: Bytecode) -> B256 {
         let hash = code.hash_slow();

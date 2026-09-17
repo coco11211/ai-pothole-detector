@@ -10,6 +10,8 @@
 
 pub mod rng;
 pub mod sim;
+pub mod wallet;
 
 pub use rng::Lcg;
 pub use sim::{LinkQuality, SimConfig, Simulation};
+pub use wallet::Wallet;
