@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned for reproducible consensus builds. reth v2.6.0 requires >= 1.95.
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

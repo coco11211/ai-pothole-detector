@@ -10,26 +10,40 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M0: ARCHITECTURE** — IN PROGRESS
+**M0: ARCHITECTURE** — PASSED. **M1: SKELETON** — IN PROGRESS
 
 ## State right now
 
-Repo is empty apart from these state files. Nothing built yet.
+M0 complete. ARCHITECTURE.md, DECISIONS.md, OPEN-PROBLEMS.md, BLOCKERS.md all
+written from source that was actually read. Cargo workspace root exists,
+toolchain pinned to 1.98.1, dependency graph resolves (`cargo fetch` green).
+
+Key facts a fresh session needs and should not re-derive:
+- reth pinned at v2.6.0, commit 73a3a00862a8f14f89e30da8de001456f18cfae0.
+  Clone lives at $SCRATCH/reth if still present; re-clone blobless if not.
+- We depend on `alloy-evm` 0.39.0 + `revm` 43.0.2 DIRECTLY, not on reth crates.
+  Reasoning and proof in DECISIONS.md C-001. Do not "fix" this back to reth.
+- Container shipped Rust 1.94.1 which cannot build reth. 1.98.1 installed via
+  rustup and pinned in rust-toolchain.toml.
+- `ContextTr::set_block` exists, so per-transaction beneficiary works. This is
+  load-bearing for merge-set coinbase. DECISIONS.md D-007.
+- solc and foundry are NOT installed. BLOCKERS.md B-001. Needed at M2 and M7.
 
 ## What has passed
 
-Nothing yet.
+- **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
+  integration point cites a file path and symbol read from pinned source.
 
 ## In flight
 
-- Cloning reth to read actual source and verify the spec's claims.
-- Producing ARCHITECTURE.md and OPEN-PROBLEMS.md.
+M1 skeleton: crate scaffolding, config, logging, CI.
 
 ## Exact next action
 
-Clone `paradigmxyz/reth`, pick an exact release tag, and read the real
-integration points (block executor, state provider, RPC assembly, storage)
-before writing a single line of ARCHITECTURE.md.
+Build out `crates/primitives` with the CHAINNAME header/block types and chain
+parameter constants, then `crates/node` with config loading, structured
+logging via tracing-subscriber, and a clean boot/exit path. Add
+`.github/workflows/ci.yml` running fmt, clippy -D warnings, and test.
 
 ## Milestone ledger
 
