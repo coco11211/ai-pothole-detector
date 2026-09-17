@@ -1145,6 +1145,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "chainname-ghostdag"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "chainname-difficulty",
+ "chainname-primitives",
+ "proptest",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "chainname-node"
 version = "0.0.1"
 dependencies = [

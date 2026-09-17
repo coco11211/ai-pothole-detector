@@ -10,7 +10,7 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M3: POW AND BLOCKS** — PASSED. **M4: GHOSTDAG** — IN PROGRESS
+**M4: GHOSTDAG** — PASSED. **M5: NETWORKING** — IN PROGRESS
 
 ## State right now
 
@@ -33,6 +33,14 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M4 GATE PASSED.** GHOSTDAG colouring, blue score, blue work, selected
+  parent chain, merge set, and the layering sort. 34 tests including five
+  property tests for ARCHITECTURE.md §6.4's P1-P4 and the round-advance
+  invariant, plus adversarial DAGs: a withheld branch released late, a merge
+  set ten wide against k=3, and k=0. `identical_dags_built_in_different_orders_agree_exactly`
+  builds the same eight-block DAG in four insertion orders and asserts every
+  block's GHOSTDAG data, the chain tip, and the whole selected parent chain
+  match exactly.
 - **M3 GATE PASSED.** `crates/difficulty/tests/retarget_simulation.rs`
   simulates 150,000 blocks through a 10x hashrate step up and a 90% step down:
   block time returns to within 5% of the 1s target in every regime, difficulty
@@ -65,8 +73,22 @@ Crates that exist and what they hold:
 - `crates/pow` — `PowHash` trait + `DoubleKeccak256`. 7 tests.
 - `crates/difficulty` — compact `bits` codec + ASERT. 25 unit + 3 simulation.
 - `crates/consensus` — genesis, header validation, miner. 13 tests.
+- `crates/ghostdag` — `work` (PoW accumulation), `dag` (`DagStore`,
+  reachability, colouring), `ordering` (base sequence + layering sort).
+  34 tests.
 
 More facts not to re-derive:
+- The merge set EXCLUDES the selected parent. A block with ten parents has a
+  merge set of nine. The selected parent is the previous chain block and its
+  transactions are already executed. DECISIONS.md D-022.
+- `blue_work(B) = blue_work(selected_parent) + sum(work of mergeset_blues
+  except the selected parent) + work(B)`. The block's own work IS included.
+  Without it, blue work would not grow along a plain chain.
+- `work_for_target` must handle `target == U256::MAX` explicitly: `target + 1`
+  overflows into a divide-by-zero. Third extreme-value arithmetic bug in this
+  codebase; test the ends of the range.
+- Red blocks' transactions ARE executed. Colouring affects blue score and fork
+  choice, not inclusion. DECISIONS.md D-023.
 - **ASERT must compute its intermediate in U512.** `anchor * factor` needs up
   to 256+17 bits and the shift adds 16 more. A saturating U256 multiply does
   NOT contain this: the later `>> 16` pulls the saturated value back under the
@@ -91,21 +113,26 @@ More facts not to re-derive:
 
 ## In flight
 
-M4 GHOSTDAG: DAG storage, blue set, blue score, selected parent chain, merge
-set ordering, and the deterministic intra-merge-set sort.
+M5 NETWORKING. The largest single work item. Budget accordingly.
 
 ## Exact next action
 
-1. `crates/ghostdag`: `DagStore` holding headers plus per-block GHOSTDAG data
-   (selected parent, blue set, blue score, blue work, mergeset blues/reds).
-2. Implement the GHOSTDAG ordering algorithm from the PHANTOM paper:
-   selected parent = max blue work among parents; k-cluster check to colour
-   the mergeset blue or red; blue score = parent's blue score + blue mergeset
-   size.
-3. Implement the merge-set base sequence and the layering sort exactly as
-   ARCHITECTURE.md §6.1 and §6.3 specify.
-4. Gate: property tests for P1-P4 in ARCHITECTURE.md §6.4, plus adversarial
-   DAGs asserting ordering is identical across independently-built instances.
+1. `crates/net`: a Kaspa-style flood-relay wire protocol. NOT devp2p — the
+   `eth` protocol is range queries over block numbers and does not fit a DAG
+   (DECISIONS.md D-014, C-001). Messages needed: `Version`/`Verack`,
+   `InvBlock`, `GetBlock`, `Block`, `InvTx`, `GetTx`, `Tx`,
+   `GetTips`, `Tips`, `GetAnticone` (headers-first DAG sync by hash).
+2. Orphan pool: blocks whose parents have not arrived, with a bounded size and
+   eviction. `DagStore::add_block` already returns
+   `DagError::MissingParent` for exactly this.
+3. Peer scoring with NO stake weighting: score on protocol compliance and
+   usefulness (valid blocks delivered, malformed messages, timeouts).
+4. `crates/testkit`: the deterministic multi-node harness. Build it as
+   infrastructure, seeded, with simulated latency and packet loss. It has to
+   be easy to run and reproducible — nondeterministic divergence cannot be
+   debugged.
+5. Gate: 5 nodes on one machine converge on identical DAG state from a cold
+   start, sustained 30 minutes, under simulated packet loss and latency.
 
 ## Milestone ledger
 
@@ -115,8 +142,8 @@ set ordering, and the deterministic intra-merge-set sort.
 | M1  | Skeleton           | PASSED      |
 | M2  | Execution          | PASSED      |
 | M3  | PoW and blocks     | PASSED      |
-| M4  | GHOSTDAG           | IN PROGRESS |
-| M5  | Networking         | not started |
+| M4  | GHOSTDAG           | PASSED      |
+| M5  | Networking         | IN PROGRESS |
 | M6  | The seam           | not started |
 | M7  | RPC                | not started |
 | M8  | Hardening          | not started |

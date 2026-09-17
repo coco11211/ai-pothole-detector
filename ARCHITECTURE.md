@@ -191,9 +191,16 @@ For selected-chain block `N`:
 
 1. `mergeset(N) = past(N) \ past(selected_parent(N))`, plus `N` itself.
 2. Order `mergeset(N)` **topologically**, ties broken by
-   `(blue_score ASC, block_hash ASC)`. Kaspa-style. Deterministic because
-   block hashes are unique and total.
-3. Concatenate each block's transaction list in that block order.
+   `(blue_work ASC, block_hash ASC)`. Deterministic because block hashes are
+   unique, so the comparator is total and never ties.
+
+   Blue *work*, not blue score: counting blocks would let a miner on an easy
+   target outweigh one on a hard target. Implemented as
+   `DagStore::compare_blocks` in `crates/ghostdag/src/dag.rs`.
+3. Concatenate each block's transaction list in that block order. Red blocks
+   are included: folding orphans into the ledger rather than discarding them
+   is the point of the DAG. Redness costs a block its contribution to blue
+   score, not its transactions.
 4. **Deduplicate**, first occurrence wins. A transaction included in several
    parallel blocks executes once. The block of first occurrence owns it for
    coinbase/COINBASE purposes (§8).

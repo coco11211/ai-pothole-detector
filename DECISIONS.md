@@ -158,6 +158,41 @@ therefore a difficulty attack, not a cosmetic problem. Two minutes is far above
 any plausible honest clock skew and far below the 2-hour half-life, so honest
 blocks are never rejected and the attack is bounded to a negligible nudge.
 
+## D-020 — selected parent chosen by blue work, not blue score — SETTLED
+
+Counting blue *blocks* would let a miner on an easy target outweigh one on a
+hard target, which is a difficulty-manipulation attack on fork choice. Blue
+work sums each blue block's expected hashes (`crates/ghostdag/src/work.rs`).
+Ties break on block hash, so the comparator is total and every node resolves
+them identically.
+
+## D-021 — genesis is its own selected parent — SETTLED
+
+Genesis is the one block with no parent. Making its selected parent
+self-referential means chain walks terminate on a value rather than on an
+`Option`, so no caller has to special-case the root. The walk stops on the
+`cursor == genesis` check, not on a null.
+
+## D-022 — merge set excludes the selected parent — SETTLED
+
+`mergeset(N) = past(N) \ past(selected_parent(N))` does not contain the
+selected parent itself. The selected parent is the *previous chain block*; its
+transactions were executed when it was the chain tip. Including it would
+execute them twice.
+
+Consequence worth remembering: a block with ten parents has a merge set of
+nine, not ten.
+
+## D-023 — red blocks' transactions are executed — SETTLED
+
+Colouring is about blue score and fork choice, not about inclusion. Red blocks
+contribute their transactions to the execution order exactly like blue ones.
+Discarding them would make the DAG pointless — folding orphans into the ledger
+instead of throwing them away is the reason for using one.
+
+The separate question of whether red blocks should be *paid* is
+OPEN-PROBLEMS.md P-010.
+
 ---
 
 # CORRECTIONS

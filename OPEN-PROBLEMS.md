@@ -72,3 +72,33 @@ Exchange-style integrations must pick a depth and own that choice.
 `k = 18` is Kaspa-proven for 1 bps. The PHANTOM formula needs a measured
 propagation delay bound, which does not exist until the M5 harness runs.
 Guessing it would be the single most dangerous shortcut available. M9 gate.
+
+## P-009 — reachability is O(|past|), not O(1)
+
+`DagStore::is_ancestor_of` is a memoised breadth-first search over parent
+edges. Correct, simple, and adequate for tests and moderate DAGs. It is called
+inside the k-cluster colouring loop, so its cost multiplies.
+
+Kaspa solves this with interval-labelled reachability, which answers ancestry
+in O(1) by assigning each block an interval in a tree traversal and testing
+containment. That is the known fix, deliberately deferred.
+
+This is a performance ceiling, not a correctness gap, but it will bind before
+M8's soak test is meaningful at scale. Scheduled debt.
+
+## P-010 — paying red blocks weakens the k-cluster incentive
+
+The brief specifies that the coinbase pays *every* block in the merge set, so
+that mining on the DAG rather than withholding is always rewarded. Implemented
+as specified.
+
+Kaspa does not do this: it pays only blue blocks. The difference matters. If
+red blocks are paid, a miner who violates the k-cluster property — for example
+by withholding blocks and releasing them late — is still paid for the blocks
+that get coloured red. The k-cluster rule then costs them blue score, which
+affects fork choice, but costs them nothing in revenue.
+
+Whether that is acceptable depends on whether blue score alone is a sufficient
+deterrent. It is not obvious either way and no analysis has been done here. The
+conservative alternative — pay blues only — is a one-line change in the block
+executor if this turns out to be wrong. Recorded rather than silently resolved.
