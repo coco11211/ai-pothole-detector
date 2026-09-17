@@ -103,24 +103,34 @@ narrowed to the subset that is not chain-shaped.
 
 ```
 crates/
-  primitives/   Header, Block, BlockId, BlueScore, BlueWork, chain params
-  pow/          PowHash trait + KeccakF1600x2 implementation
-  difficulty/   ASERT, integer fixed point, cubic 2^x approximation
+  primitives/   Header, Block, chain parameters
+  pow/          PowHash trait + DoubleKeccak256
+  difficulty/   compact target codec, ASERT, integer cubic 2^x
   ghostdag/     DAG store, blue set, blue score, selected parent chain,
-                merge set, the canonical ordering rule (§6)
-  storage/      block store, header store, state store, reorg journal
-  execution/    revm driver, block executor, state root, receipts
-  net/          flood relay wire protocol, discovery, sync  (M5)
-  rpc/          eth_* namespace + chainname_* DAG namespace   (M7)
-  node/         config, wiring, mining loop, the seam
-  testkit/      deterministic multi-node simulation harness   (M5)
+                merge set, the canonical ordering rule (§6), k derivation
+  consensus/    genesis, header validation, miner
+  storage/      redb-backed block store
+  execution/    revm driver, world state, state root
+  chain/        THE SEAM (§7): reorg, undo journal, bodies, chain-block
+                executor, parallel execution
+  pool/         mempool with fee-rate eviction
+  net/          wire protocol, peer scoring, sync state machine, TCP transport
+  rpc/          backend, eth_* namespace, chainname_* DAG namespace, server
+  node/         config, dev chain, wiring
+  testkit/      deterministic multi-node simulation harness
 bin/
   chainname-node
+fuzz/           cargo-fuzz targets (excluded from the workspace)
 ```
 
 Dependency direction is strictly downward. `ghostdag` does not depend on
-`execution`; `execution` does not depend on `ghostdag`. The seam (§7) lives in
-`node` and is the only place both are visible.
+`execution`; `execution` does not depend on `ghostdag`. **The seam lives in
+`chain`**, which is the only crate that sees both.
+
+That is a change from this document's first draft, which put the seam in
+`node`. Keeping it in its own crate means it can be tested directly — reorg
+equivalence, undo-to-genesis, parallel-versus-sequential — without booting a
+node, and `node` stays what it should be: wiring.
 
 ---
 
@@ -461,3 +471,35 @@ State root is recomputed from the hashed state via
 `alloy_trie::root::state_root` at M2–M8 scale. This is O(state) per chain block
 and will not survive a large state; replacing it with an incremental trie is
 OPEN-PROBLEMS.md P-004 and is a known, scheduled debt, not an oversight.
+
+
+---
+
+## 14. What changed after this document was first written
+
+This file was written at M0, before any code existed, and most of it survived.
+These are the places where contact with the source moved it, each recorded in
+full in DECISIONS.md:
+
+* **The seam lives in `crates/chain`, not `node`** (§3 above). Testability.
+* **The undo journal is built from revm's state diff, not from the static
+  access set.** The EVM exceeds the declared access set via `CALL`, `CREATE`
+  and `SELFDESTRUCT`; a journal built from the declaration would corrupt state
+  on reorg, and only on reorg. D-029.
+* **Merge-set ordering ties break on blue *work*, not blue score.** Counting
+  blocks lets an easy-target miner outweigh a hard-target one. D-020.
+* **Block bodies travel with headers.** A header in the DAG is immediately
+  executable, so a body arriving second is an indefensible race. D-030.
+* **The block gas *ceiling* and the EIP-1559 *target* are separate numbers.**
+  Dividing a throughput target by a high block rate produced a ceiling below
+  EIP-7825's per-transaction cap, which would have made large contract
+  deployments impossible at any price. D-042.
+* **`k` is measured, not assumed** — 18 at 1 bps, 151 at 10 bps, from measured
+  propagation bounds fed through the PHANTOM formula. D-041.
+* **The proof-of-work function is double Keccak-256**, reading the brief's
+  "two-round Keccak-f[1600]" as two full applications rather than a
+  reduced-round permutation, which would have been trivially invertible.
+  D-016.
+
+The deferred state root (§5), the ordering rule (§6) and the seam design (§7)
+are as first written.
