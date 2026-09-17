@@ -14,9 +14,11 @@
 //!   intra-merge-set sort that feeds execution (ARCHITECTURE.md §6).
 
 pub mod dag;
+pub mod k_parameter;
 pub mod ordering;
 pub mod work;
 
 pub use dag::{DagError, DagStore, GhostdagData};
+pub use k_parameter::{calculate_k, calculate_k_default};
 pub use ordering::{AccessSet, layer_and_sort};
 pub use work::work_for_target;

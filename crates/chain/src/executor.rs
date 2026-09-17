@@ -181,9 +181,19 @@ impl ChainExecutor {
         let Some(parent) = self.results.get(&parent_height) else {
             return INITIAL_BASE_FEE;
         };
+        // The fee is steered towards the *amortised* target, not the hard
+        // ceiling. Those differ at high block rates, where the ceiling is
+        // raised so a maximum-size transaction can still be included
+        // (ChainParams::block_gas_limit). Steering on the ceiling instead
+        // would let sustained throughput run at several times the advertised
+        // target before the fee reacted at all.
+        //
+        // `calc_next_block_base_fee` derives its target as
+        // `gas_limit / elasticity`, so passing twice the target with an
+        // elasticity of 2 makes it steer towards exactly the target.
         alloy_eips::eip1559::calc_next_block_base_fee(
             parent.gas_used,
-            self.params.block_gas_limit(),
+            self.params.block_gas_target().saturating_mul(2),
             parent.base_fee_per_gas,
             BASE_FEE_PARAMS,
         )

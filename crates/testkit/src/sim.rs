@@ -121,6 +121,37 @@ pub struct SimConfig {
     pub txs_per_block: usize,
 }
 
+impl SimConfig {
+    /// The 1 block/second configuration, matching `ChainParams::testnet_1bps`.
+    pub fn at_one_bps(nodes: usize, seed: u64) -> Self {
+        let params = ChainParams::testnet_1bps();
+        Self {
+            nodes,
+            seed,
+            k: params.ghostdag_k,
+            mergeset_limit: params.mergeset_size_limit(),
+            block_interval_ms: params.target_block_interval_ms,
+            ..Default::default()
+        }
+    }
+
+    /// The 10 block/second configuration, matching `ChainParams::testnet_10bps`.
+    ///
+    /// `k` comes from the parameters, which carry the value measured for this
+    /// rate rather than the 1 bps one.
+    pub fn at_ten_bps(nodes: usize, seed: u64) -> Self {
+        let params = ChainParams::testnet_10bps();
+        Self {
+            nodes,
+            seed,
+            k: params.ghostdag_k,
+            mergeset_limit: params.mergeset_size_limit(),
+            block_interval_ms: params.target_block_interval_ms,
+            ..Default::default()
+        }
+    }
+}
+
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
@@ -130,7 +161,7 @@ impl Default for SimConfig {
             mergeset_limit: 180,
             block_interval_ms: 1_000,
             link: LinkQuality::default(),
-            tick_interval_ms: 2_000,
+            tick_interval_ms: 500,
             txs_per_block: 2,
         }
     }
@@ -210,6 +241,14 @@ pub struct Simulation {
     mining_enabled: bool,
     /// Virtual time at which any node last accepted a block.
     last_change_ms: u64,
+    /// When each block was first created, and how many nodes hold it.
+    ///
+    /// Used to measure the propagation delay bound, which is the input the
+    /// PHANTOM formula needs to choose `k`. Guessing `k` is the single most
+    /// dangerous shortcut available here, so it is measured.
+    propagation: BTreeMap<BlockHash, (u64, usize, u64)>,
+    /// Completed propagation delays, in milliseconds.
+    delays: Vec<u64>,
 }
 
 impl std::fmt::Debug for Simulation {
@@ -310,6 +349,8 @@ impl Simulation {
             deepest_reorg: 0,
             mining_enabled: true,
             last_change_ms: GENESIS_MS,
+            propagation: BTreeMap::new(),
+            delays: Vec::new(),
         };
 
         sim.connect_all();
@@ -556,6 +597,7 @@ impl Simulation {
         self.last_change_ms = self.now_ms;
 
         for hash in accepted {
+            self.record_propagation(hash);
             let encoded: Vec<alloy_primitives::Bytes> = self.nodes[node].sync.body(hash).to_vec();
             let mut txs: Vec<ChainTx> = Vec::with_capacity(encoded.len());
             for bytes in &encoded {
@@ -573,6 +615,44 @@ impl Simulation {
         }
 
         self.advance_execution(node);
+    }
+
+    /// Notes that one more node now holds `hash`, and records the delay once
+    /// every node does.
+    fn record_propagation(&mut self, hash: BlockHash) {
+        let now = self.now_ms;
+        let total = self.nodes.len();
+        let entry = self.propagation.entry(hash).or_insert((now, 0, 0));
+        entry.1 += 1;
+        if entry.1 == total {
+            entry.2 = now.saturating_sub(entry.0);
+            self.delays.push(entry.2);
+        }
+    }
+
+    /// Propagation delays observed, in milliseconds, sorted ascending.
+    ///
+    /// The delay for a block is the time from its creation until *every* node
+    /// holds it. That is the quantity the PHANTOM formula calls `D`.
+    pub fn propagation_delays(&self) -> Vec<u64> {
+        let mut delays = self.delays.clone();
+        delays.sort_unstable();
+        delays
+    }
+
+    /// The delay below which `percentile` of blocks propagate fully.
+    ///
+    /// `percentile` is in parts per thousand, so 999 is the 99.9th percentile.
+    pub fn propagation_delay_percentile(&self, percentile: u64) -> u64 {
+        let delays = self.propagation_delays();
+        if delays.is_empty() {
+            return 0;
+        }
+        let index = usize::try_from(
+            (delays.len() as u64).saturating_sub(1) * percentile.min(1_000) / 1_000,
+        )
+        .unwrap_or(0);
+        delays[index.min(delays.len() - 1)]
     }
 
     /// Brings a node's execution up to its DAG's selected parent chain.

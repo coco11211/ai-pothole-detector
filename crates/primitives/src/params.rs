@@ -62,14 +62,35 @@ pub const INITIAL_SUBSIDY_WEI: u128 = 50_000_000_000_000_000_000;
 /// the exponential term has decayed.
 pub const TAIL_SUBSIDY_WEI: u128 = 500_000_000_000_000_000;
 
+/// The largest gas limit a single transaction may declare.
+///
+/// EIP-7825, activated in Osaka: 2^24 gas. A block whose limit is below this
+/// cannot fit every valid transaction, so no contract requiring more than the
+/// block limit could ever be deployed.
+pub const MAX_TX_GAS_LIMIT: u64 = 16_777_216;
+
 /// GHOSTDAG `k` for a 1 block/second rate.
 ///
-/// Kaspa-proven at this rate. `k` bounds the number of blocks that may be
-/// created within the propagation delay window; exceeding it lets an attacker
-/// build a competing blue set. It must be *recomputed* from the PHANTOM
-/// paper's formula against a measured propagation bound before the rate is
-/// raised — see OPEN-PROBLEMS.md P-008. Do not guess it.
+/// Derived, not assumed: the multi-node harness measures full-propagation time
+/// across ten nodes and reports a 99th-percentile bound of ~5.0 seconds at this
+/// rate, which `chainname_ghostdag::calculate_k_default` turns into 18. That is
+/// also Kaspa's published value at 1 bps, from its own 5-second bound — an
+/// independent check that both the measurement and the formula are right.
+///
+/// See `crates/testkit/tests/measure_k.rs`.
 pub const GHOSTDAG_K_AT_1_BPS: u16 = 18;
+
+/// GHOSTDAG `k` for a 10 block/second rate.
+///
+/// Derived the same way: the harness measures a 99th-percentile propagation
+/// bound of ~6.2 seconds at 10 bps, which the PHANTOM formula turns into 151.
+///
+/// It is much larger than the 1 bps value for two compounding reasons: ten
+/// times as many blocks fit inside a propagation window, and the window itself
+/// is wider because more traffic means more contention and more retries.
+/// Carrying the 1 bps value over would have been the single most dangerous
+/// shortcut available — OPEN-PROBLEMS.md P-008.
+pub const GHOSTDAG_K_AT_10_BPS: u16 = 151;
 
 /// Upper bound on merge set size, as a multiple of `k`.
 ///
@@ -107,17 +128,22 @@ impl ChainParams {
         }
     }
 
-    /// The 10 block/second configuration. **Not usable until M9**: `ghostdag_k`
-    /// here is a placeholder copy of the 1 bps value and is wrong at this rate.
-    /// See OPEN-PROBLEMS.md P-008.
+    /// The 10 block/second configuration.
+    ///
+    /// `k` here is measured for this rate, not carried over from 1 bps.
     pub const fn testnet_10bps() -> Self {
         Self {
             chain_id: CHAIN_ID,
             target_block_interval_ms: MS_PER_SECOND / 10,
-            ghostdag_k: GHOSTDAG_K_AT_1_BPS,
+            ghostdag_k: GHOSTDAG_K_AT_10_BPS,
             asert_halflife_seconds: ASERT_HALFLIFE_SECONDS,
             target_gas_per_second: TARGET_GAS_PER_SECOND,
         }
+    }
+
+    /// The sustained gas throughput this configuration advertises.
+    pub const fn target_gas_per_second(&self) -> u64 {
+        self.target_gas_per_second
     }
 
     /// Blocks per second, derived from the interval.
@@ -128,9 +154,39 @@ impl ChainParams {
         MS_PER_SECOND / self.target_block_interval_ms
     }
 
-    /// Per-block gas limit, derived from the throughput target and the rate.
-    pub const fn block_gas_limit(&self) -> u64 {
+    /// The amortised gas budget per block: the throughput target divided by
+    /// the block rate.
+    ///
+    /// This is what EIP-1559 steers towards, and what bounds *sustained*
+    /// throughput. It is not the hard per-block ceiling — see
+    /// [`Self::block_gas_limit`].
+    pub const fn block_gas_target(&self) -> u64 {
         self.target_gas_per_second / self.blocks_per_second()
+    }
+
+    /// Hard per-block gas ceiling.
+    ///
+    /// The larger of the amortised target and the maximum a single transaction
+    /// may declare.
+    ///
+    /// # Why these are two different numbers
+    ///
+    /// Dividing the throughput target by the block rate gives 30,000,000 at
+    /// 1 bps but only 3,000,000 at 10 bps — below EIP-7825's 16,777,216
+    /// per-transaction cap. A block limit under that cap means a large
+    /// contract deployment cannot be included *at any price*, which breaks the
+    /// promise that existing Solidity deploys work unchanged. That was
+    /// OPEN-PROBLEMS.md P-002.
+    ///
+    /// Raising the throughput target instead would advertise capacity that has
+    /// not been demonstrated. So the ceiling and the target are separated: a
+    /// block *may* carry one large transaction, but sustained use above the
+    /// amortised target drives the base fee up exponentially, which is exactly
+    /// the mechanism EIP-1559 exists to provide. The fee market bounds
+    /// sustained throughput; the ceiling only bounds what fits.
+    pub const fn block_gas_limit(&self) -> u64 {
+        let amortised = self.block_gas_target();
+        if amortised > MAX_TX_GAS_LIMIT { amortised } else { MAX_TX_GAS_LIMIT }
     }
 
     /// Deferred state root lag `D`, in blocks.
@@ -210,7 +266,8 @@ mod tests {
     fn one_bps_derivations() {
         let p = ChainParams::testnet_1bps();
         assert_eq!(p.blocks_per_second(), 1);
-        assert_eq!(p.block_gas_limit(), 30_000_000);
+        assert_eq!(p.block_gas_target(), 30_000_000);
+        assert_eq!(p.block_gas_limit(), 30_000_000, "the target already exceeds the tx cap");
         assert_eq!(p.deferred_state_root_lag(), 20);
         assert_eq!(p.pruning_window_blocks(), 86_400);
         assert_eq!(p.emission_halflife_blocks(), 31_536_000);
@@ -221,8 +278,12 @@ mod tests {
     fn ten_bps_derivations() {
         let p = ChainParams::testnet_10bps();
         assert_eq!(p.blocks_per_second(), 10);
-        // OPEN-PROBLEMS.md P-002: this is the figure that is too small.
-        assert_eq!(p.block_gas_limit(), 3_000_000);
+        assert_eq!(p.block_gas_target(), 3_000_000, "the amortised budget");
+        // P-002 resolved: the ceiling is raised to the transaction cap so a
+        // large deployment can still be included, while the amortised target
+        // stays at 3,000,000 and the fee market bounds sustained use.
+        assert_eq!(p.block_gas_limit(), MAX_TX_GAS_LIMIT);
+        assert_eq!(p.ghostdag_k, 151, "measured for this rate, not carried over");
         assert_eq!(p.deferred_state_root_lag(), 200);
         assert_eq!(p.pruning_window_blocks(), 864_000);
         assert_eq!(p.emission_halflife_blocks(), 315_360_000);
@@ -244,6 +305,27 @@ mod tests {
     fn rejects_zero_k() {
         let p = ChainParams { ghostdag_k: 0, ..ChainParams::testnet_1bps() };
         assert_eq!(p.validate(), Err(ParamsError::ZeroK));
+    }
+
+    #[test]
+    fn every_valid_transaction_fits_in_a_block() {
+        // The compatibility promise: if a transaction is valid under
+        // EIP-7825, some block can carry it. Without this a large contract
+        // deployment is impossible at any price.
+        for p in [ChainParams::testnet_1bps(), ChainParams::testnet_10bps()] {
+            assert!(
+                p.block_gas_limit() >= MAX_TX_GAS_LIMIT,
+                "at {} bps a maximum-size transaction cannot be included",
+                p.blocks_per_second()
+            );
+        }
+    }
+
+    #[test]
+    fn the_amortised_target_is_never_above_the_ceiling() {
+        for p in [ChainParams::testnet_1bps(), ChainParams::testnet_10bps()] {
+            assert!(p.block_gas_target() <= p.block_gas_limit());
+        }
     }
 
     #[test]

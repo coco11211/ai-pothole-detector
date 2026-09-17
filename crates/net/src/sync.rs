@@ -82,10 +82,27 @@ impl SyncConfig {
             // ~16 MiB of headers at worst. Large enough to absorb a deep sync,
             // small enough that a hostile peer cannot exhaust memory.
             max_orphans: 4_096,
-            // Well above any plausible round trip, so a slow honest peer is not
-            // treated as unresponsive, and low enough that a stalled request
-            // does not hold up sync for long.
-            request_timeout_ms: 10_000,
+            // Two seconds. This is the *recovery* latency after a message is
+            // lost, and it dominates propagation delay far more than the
+            // happy path does.
+            //
+            // A block reaching ten peers involves roughly thirty messages, so
+            // at even 2% loss something on the critical path is dropped for
+            // around 40% of blocks. Every one of those waits the full timeout
+            // before anything is retried -- and a request already in flight
+            // suppresses duplicates, so tip reconciliation cannot shortcut it
+            // either.
+            //
+            // At 10 seconds, measured full-propagation delay across ten nodes
+            // was 10.8s at the median against 0.6s with no loss at all. That
+            // fed straight into GHOSTDAG's `k`, which is derived from the
+            // delay bound, and made no workable `k` exist at 10 blocks per
+            // second.
+            //
+            // Two seconds is several times the round trip on any plausible
+            // link and well under one block interval at 1 bps, so an honest
+            // slow peer is still not mistaken for a dead one.
+            request_timeout_ms: 2_000,
             genesis,
         }
     }

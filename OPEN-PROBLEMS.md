@@ -17,16 +17,32 @@ hot accounts (changes the economics, not the ordering).
 
 Explicitly out of scope. Documented so no later work pretends it was handled.
 
-## P-002 — per-block gas limit at 10 bps is too small for large deploys
+## P-002 — per-block gas limit at 10 bps is too small for large deploys — RESOLVED
 
 `BLOCK_GAS_LIMIT = 30_000_000 / 10 = 3_000_000` at the M9 rate. Large contract
 deployments exceed this. A transaction cannot span blocks.
 
-Options, none chosen: raise `TARGET_GAS_PER_SECOND` (requires evidence that
-execution keeps up); allow a per-block limit above the amortised target with a
-rolling DAG-wide gas budget (complicates validation, needs a new consensus
-rule); stay at 1 bps (abandons the M9 goal). **M9 cannot pass without picking
-one.**
+**Resolved at M9**, by separating two numbers that were wrongly the same one.
+
+`block_gas_target()` is the amortised budget — the throughput target divided by
+the block rate — and is what EIP-1559 steers towards. `block_gas_limit()` is
+the hard ceiling, and is the larger of that target and EIP-7825's
+per-transaction cap of 16,777,216.
+
+At 1 bps nothing changes: target 30,000,000, ceiling 30,000,000. At 10 bps the
+target is 3,000,000 and the ceiling is 16,777,216, so a maximum-size
+transaction still fits in a block, while sustained use above 3,000,000 per
+block drives the base fee up exponentially. The fee market bounds sustained
+throughput; the ceiling only bounds what can be included at all.
+
+The option deliberately *not* taken was raising `TARGET_GAS_PER_SECOND` to
+167,000,000 so the division came out above the cap. A microbenchmark of bare
+value transfers sustains billions of gas per second
+(`crates/chain/tests/throughput.rs`), but that is unrepresentative — no
+contract execution, a tiny account set, and a state root computation that is
+only cheap because the state is trivial (P-004). Advertising a throughput
+figure on that evidence is exactly the "absurd capacity" failure this problem
+was raised to avoid.
 
 ## P-003 — header-only sync trusts state up to D blocks behind
 
@@ -67,11 +83,36 @@ blue-score depth so callers can choose their own confidence threshold. There
 is no point at which a reorg becomes impossible, only increasingly unlikely.
 Exchange-style integrations must pick a depth and own that choice.
 
-## P-008 — `k` at 10 bps is not yet known
+## P-008 — `k` at 10 bps is not yet known — RESOLVED
 
-`k = 18` is Kaspa-proven for 1 bps. The PHANTOM formula needs a measured
-propagation delay bound, which does not exist until the M5 harness runs.
-Guessing it would be the single most dangerous shortcut available. M9 gate.
+**Resolved at M9, by measurement.**
+
+`chainname_ghostdag::calculate_k` implements the PHANTOM tail bound:
+`k = min { k : P[X > k] <= delta }` for `X ~ Poisson(2 * delay * rate)`. Fed
+Kaspa's own inputs — a 5-second bound, 1 bps, delta 0.01 — it returns exactly
+18, which is Kaspa's published value and an independent check that the formula
+is right.
+
+`crates/testkit/tests/measure_k.rs` then measures full-propagation time across
+ten nodes and takes the 99th percentile as the bound:
+
+| rate | measured p99 delay | derived k |
+|---|---|---|
+| 1 bps | ~5.0 s | 18 |
+| 10 bps | ~6.2 s | 151 |
+
+The 1 bps row landing on 18 — Kaspa's value, from our own measurement rather
+than from copying it — is the strongest evidence available that the 10 bps row
+is trustworthy too.
+
+Getting there required fixing something else first. The request timeout was 10
+seconds, roughly twenty times the round trip, and since an in-flight request
+suppresses duplicates nothing could shortcut it. A block reaching ten peers
+involves about thirty messages, so at 2% loss something on the critical path
+was dropped for around 40% of blocks, and measured propagation was 10.8s at the
+median against 0.6s with no loss at all. That fed straight into `k` and made no
+workable value exist at 10 bps. At a 2-second timeout the same measurement
+gives 5.0s and 6.2s.
 
 ## P-009 — reachability is O(|past|), not O(1) — MITIGATED
 

@@ -378,6 +378,45 @@ permanently broken connection, and a six-node network quietly disconnected
 itself into permanent non-convergence. On a lossy link a dropped handshake is
 not rare, it is expected, so it has to be recoverable.
 
+## D-041 - `k` is measured, never assumed - SETTLED
+
+`GHOSTDAG_K_AT_10_BPS = 151` comes from a measured 99th-percentile propagation
+bound of ~6.2 seconds fed through the PHANTOM tail formula, not from scaling
+the 1 bps value or copying another chain's.
+
+The formula is validated against Kaspa's published parameters: 5 seconds, 1
+bps, delta 0.01 returns exactly 18. Our own measurement at 1 bps also returns
+18. Two independent routes to the same number is what makes the 10 bps figure
+believable.
+
+## D-042 - the block gas ceiling and the 1559 target are separate numbers - SETTLED
+
+`block_gas_target()` is the amortised budget EIP-1559 steers towards.
+`block_gas_limit()` is the hard ceiling, and is `max(target, EIP-7825 tx cap)`.
+
+They were the same number and that was the bug. Dividing a throughput target by
+a high block rate produces a ceiling below the per-transaction cap, which means
+a large contract deployment cannot be included *at any price* - breaking the
+promise that existing Solidity deploys work unchanged. Separating them lets a
+block carry one large transaction while the fee market, not an arbitrary
+ceiling, bounds sustained throughput. OPEN-PROBLEMS.md P-002.
+
+## D-043 - the request timeout is recovery latency, and must be sized as such - SETTLED
+
+Two seconds, not ten.
+
+The original ten seconds looked harmless: it is a timeout, and timeouts only
+fire when something has gone wrong. But an in-flight request suppresses
+duplicates, so nothing - not even periodic tip reconciliation - can shortcut
+it, and a block reaching ten peers involves about thirty messages. At 2% loss
+something on the critical path is dropped for roughly 40% of blocks, so the
+timeout was not an edge case: it was the *median* path, and measured
+propagation delay was 10.8s against 0.6s on a clean link.
+
+Propagation delay is the input to `k`. A timeout chosen carelessly therefore
+sets a consensus parameter, which is not a connection any of this made obvious
+until it was measured.
+
 ---
 
 # CORRECTIONS
