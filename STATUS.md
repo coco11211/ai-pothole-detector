@@ -10,7 +10,7 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M0: ARCHITECTURE** — PASSED. **M1: SKELETON** — IN PROGRESS
+**M1: SKELETON** — PASSED. **M2: EXECUTION** — IN PROGRESS
 
 ## State right now
 
@@ -33,25 +33,42 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M1 GATE PASSED.** `cargo test --workspace` green (28 tests),
+  `cargo clippy --all-targets -- -D warnings` clean, `cargo fmt --check`
+  clean, and `chainname-node --check` boots, initialises storage, logs the
+  resolved consensus parameters, and exits 0.
+
+Crates that exist and what they hold:
+- `crates/primitives` — `Header`, `Block`, `BlockHash`, `ChainParams`. All
+  chain constants with derivation comments. 14 tests.
+- `crates/storage` — `BlockStore` trait + `RedbStore`. Schema versioned;
+  mismatch is a hard error, never a silent migration. 5 tests.
+- `crates/node` — `NodeConfig`, `Network` presets, `Node::boot`. 9 tests.
+- `bin/chainname-node` — CLI with `--check` for the boot gate.
 
 ## In flight
 
-M1 skeleton: crate scaffolding, config, logging, CI.
+M2 execution: embed revm, execute a hardcoded transaction against genesis
+state, then deploy and call a real Solidity ERC-20.
 
 ## Exact next action
 
-Build out `crates/primitives` with the CHAINNAME header/block types and chain
-parameter constants, then `crates/node` with config loading, structured
-logging via tracing-subscriber, and a clean boot/exit path. Add
-`.github/workflows/ci.yml` running fmt, clippy -D warnings, and test.
+1. Resolve BLOCKERS.md B-001 (solc/foundry absent) — try installing solc via
+   the static linux release binary; if the fetch is blocked, fall back to
+   checked-in ERC-20 bytecode with the source and solc version recorded.
+2. Create `crates/execution`: a `revm::Database` implementation over
+   `chainname-storage`, a genesis state loader, and a single-transaction
+   execution path using `EthEvmFactory`
+   (registry:alloy-evm-0.39.0/src/eth/mod.rs:268).
+3. Gate: an ERC-20 deploys and `transfer` moves balances correctly.
 
 ## Milestone ledger
 
 | ID  | Name               | State       |
 |-----|--------------------|-------------|
-| M0  | Architecture       | IN PROGRESS |
-| M1  | Skeleton           | not started |
-| M2  | Execution          | not started |
+| M0  | Architecture       | PASSED      |
+| M1  | Skeleton           | PASSED      |
+| M2  | Execution          | IN PROGRESS |
 | M3  | PoW and blocks     | not started |
 | M4  | GHOSTDAG           | not started |
 | M5  | Networking         | not started |

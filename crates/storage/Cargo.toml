@@ -1,5 +1,5 @@
 [package]
-name = "chainname-primitives"
+name = "chainname-storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,12 +9,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+chainname-primitives.workspace = true
 alloy-primitives.workspace = true
-alloy-consensus.workspace = true
-alloy-eips.workspace = true
 alloy-rlp.workspace = true
+redb.workspace = true
 thiserror.workspace = true
-serde.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-proptest.workspace = true
+tempfile.workspace = true

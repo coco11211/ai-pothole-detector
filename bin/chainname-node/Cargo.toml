@@ -1,0 +1,20 @@
+[package]
+name = "chainname-node-bin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "chainname-node"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+chainname-node.workspace = true
+chainname-primitives.workspace = true
+clap.workspace = true
+eyre.workspace = true
+tracing.workspace = true

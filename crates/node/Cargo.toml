@@ -1,0 +1,24 @@
+[package]
+name = "chainname-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chainname-primitives.workspace = true
+chainname-storage.workspace = true
+alloy-primitives.workspace = true
+clap.workspace = true
+eyre.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
