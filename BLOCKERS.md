@@ -6,7 +6,7 @@ Format: ID, milestone, symptom, reproduction, three attempts made, current state
 
 ---
 
-## B-001 — `solc` and `foundry` are not installed — OPEN, not yet blocking
+## B-001 — `solc` and `foundry` are not installed — RESOLVED
 
 **Milestone:** M2 gate (ERC-20 deploy) and M7 gate (`forge script`).
 

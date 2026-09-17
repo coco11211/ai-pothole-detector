@@ -41,7 +41,6 @@ alloy-evm         = { version = "0.39.0", default-features = false, features = [
 alloy-sol-types   = { version = "1.6.1", default-features = false, features = ["std"] }
 alloy-signer      = { version = "2.4.2", default-features = false }
 alloy-signer-local = { version = "2.4.2", default-features = false }
-alloy-network     = { version = "2.4.2", default-features = false }
 revm              = { version = "43.0.2", default-features = false, features = ["std"] }
 
 # --- utility ---
@@ -54,7 +53,6 @@ clap       = { version = "4", features = ["derive", "env"] }
 eyre       = "0.6"
 parking_lot = "0.12"
 rayon      = "1"
-rand       = "0.9"
 tiny-keccak = { version = "2", features = ["keccak"] }
 proptest   = "1"
 jsonrpsee  = { version = "0.26", features = ["server", "client", "macros"] }

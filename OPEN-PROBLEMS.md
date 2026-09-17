@@ -1,7 +1,37 @@
 # OPEN PROBLEMS
 
 Things known to be unsolved. Not bugs, not TODOs — genuine open questions that
-the design does not answer.
+the design does not answer, or scheduled debt that has not been paid.
+
+Resolved entries are kept rather than deleted: how a problem was closed is
+often more useful than the fact that it was, and a reader needs to be able to
+tell "we thought about this" from "we never noticed".
+
+| | Problem | Status |
+|---|---|---|
+| P-001 | Adversarial merge sets defeat the ordering rule | **open, unsolved** |
+| P-002 | Gas limit too small for large deploys at 10 bps | resolved |
+| P-003 | Header-only sync trusts state `D` blocks back | open, inherent |
+| P-004 | State root is O(state) per chain block | **open, scheduled** |
+| P-005 | `PREVRANDAO` is miner-grindable | open, inherent |
+| P-006 | Proof-of-work function is unreviewed | **open, blocking launch** |
+| P-007 | No finality | open, by design |
+| P-008 | `k` at 10 bps unknown | resolved |
+| P-009 | Reachability is not O(1) | mitigated |
+| P-010 | Paying red blocks weakens the k-cluster incentive | **open, unanalysed** |
+| P-011 | Redundant data is bounded by nothing | open |
+| P-012 | No real transport | resolved |
+| P-013 | Blocks can carry unexecutable transactions | **open, spam vector** |
+| P-014 | Undo journal unbounded | partially resolved |
+| P-015 | `eth_getLogs` has no index | open |
+| P-016 | Dev node does not join the network | open, plumbing |
+| P-017 | The DAG is entirely in memory and never shrinks | **open, largest** |
+| P-018 | Parallel execution is slower than sequential | open, measured |
+| P-019 | Declared difficulty is never validated on receipt | **open, security** |
+
+The five that matter most, in order: **P-019** (unvalidated difficulty — a
+security hole, not merely debt), **P-017** (memory), **P-004** (state root),
+**P-006** (the PoW function), **P-013** (inclusion spam).
 
 ## P-001 — adversarial merge sets defeat the ordering rule
 
@@ -335,3 +365,44 @@ default (`ChainExecutor::set_parallel`). Making it pay needs either heavier
 transactions, more cores, or a cheaper way to capture access sets than a
 `HashSet` per transaction — and the last of those is the one worth trying
 first.
+
+## P-019 - a block's declared difficulty is never validated on receipt
+
+`chainname_consensus::validate_header` checks that a header's `bits` is the
+value the ASERT rule requires for its height and timestamp. It is correct and
+it is tested. **It is called from no acceptance path.**
+
+What actually runs when a block arrives is `HeaderGate::check`, and the only
+implementation checks two things: that the header is structurally well formed,
+and that its proof-of-work hash meets *the target the header itself declares*.
+Nothing checks that the declared target is the right one.
+
+So a peer can declare an easy `bits`, do a trivial amount of work, and have the
+block accepted, counted in blue work, and executed. That is the whole of
+proof-of-work security, absent.
+
+### Why it was not simply wired in
+
+`HeaderGate::check` takes a header and nothing else, and it is called in
+`DagSync::on_blocks` *before* the block enters the DAG — at which point its
+selected parent, and therefore its height, is not known. Orphans make this
+unavoidable: a block can arrive before its parents.
+
+So contextual validation cannot live in the gate. It belongs in a second
+phase, after the parents are present and GHOSTDAG has chosen a selected
+parent, with a path for rejecting a block that is already in the DAG. That
+rejection path does not exist, and inventing a partial version — validating
+only at execution time, say, which leaves invalid blocks contributing to fork
+choice — would give the appearance of enforcement without the substance.
+
+### What it needs
+
+1. A post-insertion validation phase in `DagSync::admit`, run once a block's
+   parents are all present.
+2. A way to remove a rejected block and its descendants from the DAG,
+   including its contribution to blue work.
+3. Peer penalties routed from that phase, which `Misbehaviour::InvalidBlock`
+   already anticipates.
+
+Until then this chain has no difficulty enforcement. Nothing else in this file
+is as serious.

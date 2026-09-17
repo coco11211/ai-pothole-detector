@@ -221,7 +221,16 @@ fn a_transaction_sent_to_the_miner_agrees() {
 
     let mut txs: Vec<ChainTx> = (0..6).map(|i| transfer(i + 10, i + 40, 0, 3)).collect();
     txs.push(to_miner);
-    assert_identical(&vec![(1, txs)], "transaction paying the miner directly");
+    let workload = vec![(1u8, txs)];
+    assert_identical(&workload, "transaction paying the miner directly");
+
+    // And confirm it passed for the right reason. These transactions have
+    // disjoint static access sets, so they form one round; the fee-credit
+    // shortcut must refuse to apply and force the round to fall back. If it
+    // did not, this test would be checking nothing.
+    let (_, (committed, fell_back)) = run_with_stats(&workload, true);
+    assert_eq!(fell_back, 1, "the round should have fallen back");
+    assert_eq!(committed, 0, "no round here is safe to commit from speculation");
 }
 
 #[test]

@@ -12,7 +12,6 @@ workspace = true
 chainname-primitives.workspace = true
 chainname-storage.workspace = true
 chainname-chain.workspace = true
-chainname-consensus.workspace = true
 chainname-difficulty.workspace = true
 chainname-execution.workspace = true
 chainname-ghostdag.workspace = true

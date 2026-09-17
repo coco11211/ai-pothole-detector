@@ -10,7 +10,8 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M8: HARDENING** — PASSED. **M9: RAISE THE RATE** — IN PROGRESS
+**ALL TEN MILESTONES BUILT.** M9 and M10 both passed with caveats recorded
+below and in OPEN-PROBLEMS.md. 301 tests green; clippy and fmt clean.
 
 ## State right now
 
@@ -33,6 +34,29 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M10 GATE: correctness PASSED, speedup measured and NEGATIVE.**
+  11 tests compare parallel against sequential on the same input and require
+  identical state roots, heights, per-block gas and receipt counts — across
+  independent transfers, shared senders, hot recipients, a shared beneficiary,
+  a transaction paying the miner directly, real ERC-20 deployment and calls,
+  an unexecutable transaction, and 20 blocks across 4 miners. All identical.
+  Speedup is 0.56x on value transfers and 0.74x on ERC-20 calls: parallel is
+  *slower*. Diagnostics rule out the easy explanations (zero fallbacks, 32
+  transactions per round across 4 threads). Per-transaction speculation
+  overhead is simply comparable to executing a ~4us transaction. Left off by
+  default. OPEN-PROBLEMS.md P-018 has the numbers and what would change them.
+- **M9: `k` and the gas limit resolved with evidence; gates re-run at 10 bps.**
+  `k = 151` at 10 bps, derived from a measured 99th-percentile propagation
+  bound of ~6.2s via the PHANTOM formula. The same method at 1 bps yields
+  18 — Kaspa's published value, reached independently, which is the best
+  available evidence the 10 bps figure is trustworthy. P-002 resolved by
+  separating the block gas *ceiling* from the 1559 *target*. M5, M6 and M8
+  gates all re-run and pass at 10 bps, including under 25% loss and
+  800-2500ms latency. The 10 bps soak ran 6 simulated hours across 10 nodes:
+  196,342 blocks, chain height 37,326, 252,007 reorgs (deepest 20), zero
+  divergence at every hourly checkpoint, 21 minutes wall time. The full 24
+  hours does NOT fit in this container — ~46 GiB for ten nodes — so it is
+  scoped, with the arithmetic recorded in OPEN-PROBLEMS.md P-017.
 - **M8 GATE PASSED.** 24 simulated hours, 10 nodes, checked at twelve
   checkpoints: 78,443 blocks mined, chain height 42,947, 79,267 reorgs
   (deepest 13), and at every checkpoint identical DAGs, identical chains,
@@ -121,10 +145,26 @@ Crates that exist and what they hold:
 - `crates/chain` — THE SEAM. `reorg` (chain diff), `journal` (undo records),
   `bodies` (transactions + static access sets), `executor` (chain-block
   execution, deferred state root, EIP-1559 base fee). 25 tests.
-- `crates/testkit` — seeded LCG, real secp256k1 wallets, and the deterministic
-  multi-node simulation with execution. 27 tests.
+- `crates/testkit` — seeded LCG, real secp256k1 wallets, the deterministic
+  multi-node simulation with execution, propagation measurement, and memory
+  scaling measurement.
+- `crates/net/transport` + `p2p` — real TCP: length-prefixed framing, accept
+  loop, redialling, bounded per-peer queues.
+- `crates/chain/parallel` — Block-STM style speculation over rounds.
+- `crates/ghostdag/k_parameter` — the PHANTOM formula for deriving `k`.
+- `fuzz/` — five cargo-fuzz targets, excluded from the workspace.
 
 More facts not to re-derive:
+- `k` is MEASURED: 18 at 1 bps, 151 at 10 bps. The formula is validated by
+  reproducing Kaspa's published 18 from its own stated inputs. Never carry a
+  `k` across block rates. D-041.
+- The block gas CEILING and the 1559 TARGET are different numbers. Conflating
+  them made large contract deploys impossible at 10 bps. D-042.
+- The DAG is entirely in memory and never shrinks: ~5.9 KiB per block per
+  node, so ~4.6 GiB per day at 10 bps. This is the largest unaddressed scaling
+  problem. P-017.
+- Parallel execution is correct but slower on 4 cores; it is OFF by default
+  and should stay off until P-018's numbers change.
 - Reachability prunes on TOPOLOGICAL HEIGHT, never blue score. Blue score
   counts blocks while fork choice compares work; they diverge as soon as
   difficulty varies, so a blue-score prune passes every test here and is wrong
@@ -207,23 +247,34 @@ More facts not to re-derive:
 
 ## In flight
 
-M9 RAISE THE RATE: 1 bps -> 10 bps.
+Nothing. All ten milestones are built and their gates have run.
 
 ## Exact next action
 
-1. **Recompute `k` for 10 bps.** This is the whole milestone and it must not
-   be guessed (OPEN-PROBLEMS.md P-008). Measure the propagation delay bound
-   from the M5/M8 harness at the new rate, then apply the PHANTOM paper's
-   formula. `ChainParams::testnet_10bps` currently carries the 1 bps `k` as a
-   placeholder and is documented as unusable until this is done.
-2. **Resolve P-002 before anything else ships at 10 bps.** At that rate
-   `BLOCK_GAS_LIMIT` is 3,000,000, which cannot fit a large contract
-   deployment. The three options are written up in P-002; one must be chosen,
-   not deferred again.
-3. Retune: `DEFERRED_STATE_ROOT_LAG` and the pruning window already derive
-   from the rate and need no change; verify with `ChainParams` tests.
-4. Re-run the M5, M6 and M8 gates at 10 bps.
-5. Gate: all prior gates pass at the new rate.
+All ten milestones are built. The highest-value remaining work, in order:
+
+0. **P-019: validate declared difficulty on receipt.** Found while auditing the
+   wiring at the end of M10, and it is the most serious item here. Nothing
+   checks that a block's `bits` is the value ASERT requires — only that its
+   proof of work meets the target *it declares for itself*. A peer can declare
+   an easy target, do trivial work, and be accepted. The validation code
+   exists and is tested; it is called from no acceptance path, because it
+   needs the block's height and that is not known until its parents arrive.
+   P-019 sets out where the fix belongs.
+1. **P-017: persist and prune the DAG.** It is held entirely in memory and
+   never shrinks — ~4.6 GiB per day at 10 bps. This is the largest scaling
+   problem in the system and it blocks any long-running node.
+2. **P-004: incremental state root.** Currently O(state) per chain block,
+   which is only affordable because test states are tiny.
+3. **P-009: interval-labelled reachability.** Now pruned by topological
+   height, which made it affordable, not free.
+4. **B-002: drive MetaMask itself**, or have one person connect it by hand
+   once. The wire protocol it speaks is verified; the extension is not.
+5. **P-013: the inclusion-spam vector.** A miner earns nothing from a
+   transaction that turns out to be unexecutable, but the network still paid
+   to relay it. Needs an inclusion fee or mining-time validation.
+
+Read OPEN-PROBLEMS.md before starting any of these; several interact.
 
 ## Milestone ledger
 
@@ -238,8 +289,8 @@ M9 RAISE THE RATE: 1 bps -> 10 bps.
 | M6  | The seam           | PASSED      |
 | M7  | RPC                | PASSED*     |
 | M8  | Hardening          | PASSED      |
-| M9  | Raise the rate     | IN PROGRESS |
-| M10 | Parallel execution | not started |
+| M9  | Raise the rate     | PASSED*     |
+| M10 | Parallel execution | PASSED*     |
 
 ## Protocol reminders
 

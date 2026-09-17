@@ -260,30 +260,3 @@ pub fn validate(speculations: &[Speculation]) -> Option<RoundConflict> {
     }
     None
 }
-
-/// Applies a validated round's diffs and fee credits.
-///
-/// Applied in round order. Order is immaterial once [`validate`] has passed —
-/// the diffs are disjoint — but doing it in order keeps the operation
-/// reproducible under a debugger and costs nothing.
-pub fn commit(state: &mut WorldState, speculations: &[Speculation], miners: &[Address]) {
-    use revm::database_interface::DatabaseCommit;
-
-    for speculation in speculations {
-        if speculation.result.is_none() {
-            continue;
-        }
-        state.commit(speculation.diff.clone());
-    }
-
-    // Fee credits last, accumulated per miner. These were removed from the
-    // diffs precisely so they would not look like conflicts.
-    for (speculation, miner) in speculations.iter().zip(miners.iter()) {
-        if speculation.fee_credit.is_zero() {
-            continue;
-        }
-        let mut account = state.account(*miner).cloned().unwrap_or_default();
-        account.info.balance = account.info.balance.saturating_add(speculation.fee_credit);
-        state.insert_account(*miner, account);
-    }
-}

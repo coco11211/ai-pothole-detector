@@ -4,6 +4,13 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  # So the soaks can also be triggered by hand from the Actions tab.
+  workflow_dispatch:
+  schedule:
+    # The long soaks take minutes, not seconds, so they run nightly rather
+    # than on every push. Behind `--ignored` with nothing scheduled, they
+    # would simply never run.
+    - cron: "0 3 * * *"
 
 env:
   CARGO_TERM_COLOR: always
@@ -31,7 +38,6 @@ jobs:
             https://github.com/ethereum/solidity/releases/download/v0.8.30/solc-static-linux
           chmod +x "$RUNNER_TEMP/solc"
           echo "CHAINNAME_SOLC=$RUNNER_TEMP/solc" >> "$GITHUB_ENV"
-
 
       - name: Format
         run: cargo fmt --all --check
@@ -73,3 +79,28 @@ jobs:
             cargo +nightly fuzz run "$target" -- -max_total_time=30 -rss_limit_mb=4096
             echo "::endgroup::"
           done
+
+  soak:
+    name: long soaks
+    # Nightly only: several minutes each, and not what a pull request needs to
+    # know. A manual run is available from the Actions tab.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      # 24 simulated hours across ten nodes at 1 bps.
+      - name: Soak at 1 bps
+        run: |
+          cargo test -p chainname-testkit --release --test soak -- --ignored --nocapture
+
+      # The 10 bps soak holds ten complete nodes in one process and needs
+      # roughly 13 GiB (OPEN-PROBLEMS.md P-017). A standard runner has 7 GiB,
+      # so this step is expected to fail there and is allowed to: the failure
+      # is informative, and silently skipping it would not be.
+      - name: Soak at 10 bps
+        continue-on-error: true
+        run: |
+          free -g
+          cargo test -p chainname-testkit --release --test ten_bps -- --ignored --nocapture

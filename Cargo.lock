@@ -1320,7 +1320,6 @@ dependencies = [
  "alloy-signer-local",
  "alloy-trie",
  "chainname-chain",
- "chainname-consensus",
  "chainname-difficulty",
  "chainname-execution",
  "chainname-ghostdag",
