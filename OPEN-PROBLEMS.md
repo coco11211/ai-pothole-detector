@@ -262,3 +262,76 @@ TCP, convergence in simulation — but the binary wires only two of them
 together. What remains is plumbing, not design: give the dev node a
 `P2pNode`, route mined blocks through `announce_local_block`, and feed
 accepted blocks into the backend.
+
+## P-017 - the DAG is held entirely in memory, and never shrinks
+
+`DagStore` keeps every header and every block's GHOSTDAG data in memory for
+the life of the process. `BodyStore` keeps every transaction. Nothing is
+persisted to `chainname-storage`, and nothing is ever dropped, not even below
+the pruning window.
+
+Measured at ~5.9 KiB per block per node
+(`crates/testkit/tests/memory_scale.rs`), which is stable across block rates,
+so the cost is driven by block count alone:
+
+| rate | blocks per day | memory per node per day |
+|---|---|---|
+| 1 bps | 86,400 | ~0.5 GiB |
+| 10 bps | 864,000 | ~4.6 GiB |
+
+A real node at 10 bps therefore needs several gigabytes per day of uptime and
+grows without bound. That is not sustainable, and it is the reason the M9 soak
+is scoped to six simulated hours rather than twenty-four: the harness holds ten
+complete nodes in one address space, so a full day at 10 bps would need roughly
+46 GiB.
+
+Two things are needed and neither is built: persist the DAG through
+`chainname-storage` rather than holding it in memory, and prune blocks below
+the pruning window from the in-memory working set. The undo journal already
+prunes (P-014); the DAG and bodies do not.
+
+This is the largest unaddressed scaling problem in the system.
+
+## P-018 - speculative parallel execution is slower than sequential here
+
+M10's correctness half is met: parallel and sequential execution produce
+byte-identical state roots, receipts and gas on every workload
+`crates/chain/tests/parallel.rs` can construct, including real contract
+deployment, a shared beneficiary, and a transaction that pays the miner
+directly.
+
+The performance half is measured and is **negative**:
+
+| workload | transactions | sequential | parallel | ratio | rounds committed | fell back |
+|---|---|---|---|---|---|---|
+| value transfers | 768 | 3.26 ms | 5.84 ms | 0.56x | 24 | 0 |
+| ERC-20 transfers | 193 | 2.44 ms | 3.30 ms | 0.74x | 193 | 0 |
+
+The diagnostics rule out the obvious explanations. Nothing fell back, so
+speculation is not being wasted on conflicts. The transfer workload ran 32
+transactions per round across 4 threads, so parallelism genuinely happened.
+
+What is left is that the per-transaction overhead of speculation —
+capturing read and write sets, applying diffs, thread hand-off — is comparable
+to executing a transaction at all. A value transfer is about 4 microseconds of
+EVM work. Three targeted optimisations (reusing one EVM per worker thread,
+clearing the read cache in place rather than reallocating it, moving diffs
+instead of cloning them) each changed the result by less than the noise.
+
+Two further caveats on the measurement, both of which cap any achievable
+speedup and neither of which is the parallel path's fault:
+
+* This machine has 4 cores. Block-STM's published results are from machines
+  with 8 to 64.
+* Both paths pay the O(state) state root computation per chain block (P-004),
+  which is sequential either way and is a substantial share of these timings.
+
+The ERC-20 row is a different problem and not a surprise: every call targets
+the same contract, so the static access sets all collide and each round holds
+exactly one transaction. That is P-001, demonstrated, not a defect here.
+
+So: the machinery is correct and is not yet worth enabling. It is off by
+default (`ChainExecutor::set_parallel`). Making it pay needs either heavier
+transactions, more cores, or a cheaper way to capture access sets than a
+`HashSet` per transaction — and the last of those is the one worth trying
+first.

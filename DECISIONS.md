@@ -417,6 +417,40 @@ Propagation delay is the input to `k`. A timeout chosen carelessly therefore
 sets a consensus parameter, which is not a connection any of this made obvious
 until it was measured.
 
+## D-044 - parallel execution is off by default - SETTLED
+
+`ChainExecutor::set_parallel` defaults to false.
+
+Two reasons. It is measured slower than sequential on this hardware
+(OPEN-PROBLEMS.md P-018), so enabling it would be a pessimisation. And a bug
+in a speculative execution path is a consensus split, so it should not become
+the default behaviour of every node until there is a reason to want it.
+
+## D-045 - a round falls back to the sequential path, not to a second implementation - SETTLED
+
+When speculation finds a real conflict, the round is re-executed by calling
+`execute_sequentially` on exactly that round.
+
+The tempting alternative is a bespoke fallback inside the parallel path. That
+would mean two implementations of the block's semantics - gas budgeting,
+skip-on-unexecutable, receipt construction - which would drift, and the
+drift would surface as a state root divergence between nodes that happened to
+schedule differently. One implementation, called from both paths.
+
+## D-046 - fee credits are commutative and excluded from conflict detection - SETTLED
+
+Every transaction in a block credits its priority fee to the same beneficiary,
+so treated naively no two transactions are ever independent and parallel
+execution can never do anything.
+
+Fee credits are additions, and addition commutes, so they are removed from each
+transaction's diff and re-applied after the round. The safety condition is
+checked rather than assumed: the beneficiary's account must have changed by
+*exactly* the expected fee and in no other field. A transaction that touches
+the miner's account for any other reason - paying it, being sent by it - is
+treated as a genuine conflict and forces the fallback. There is a test for
+precisely that case.
+
 ---
 
 # CORRECTIONS

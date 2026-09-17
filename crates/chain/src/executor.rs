@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use alloy_consensus::{Eip658Value, Receipt, ReceiptWithBloom, Transaction as _};
 use alloy_eips::eip1559::BaseFeeParams;
 use alloy_evm::Evm;
-use alloy_primitives::{Address, B256, Log};
+use alloy_primitives::{Address, B256, Log, U256};
 use chainname_execution::{ChainBlockCtx, WorldState, make_evm, set_beneficiary};
 use chainname_ghostdag::{
     DagStore,
@@ -101,6 +101,19 @@ pub struct ChainExecutor {
     results: BTreeMap<u64, ChainBlockOutcome>,
     /// Undo records by height, newest last.
     journal: Vec<(u64, BlockHash, UndoRecord)>,
+    /// Rounds committed from speculation, and rounds that had to fall back.
+    ///
+    /// Diagnostic only. Reported so the speedup measurement can distinguish
+    /// "parallelism did not help" from "parallelism never happened".
+    parallel_rounds: u64,
+    /// Rounds discarded because speculation found a real conflict.
+    fallback_rounds: u64,
+    /// Whether rounds are executed in parallel.
+    ///
+    /// Off by default. Parallel execution must produce byte-identical state to
+    /// sequential; it is opt-in so that a bug in the parallel path cannot
+    /// silently become the default behaviour of every node.
+    parallel: bool,
     /// Height of the current chain tip.
     height: u64,
     /// Hash of the current chain tip.
@@ -135,9 +148,30 @@ impl ChainExecutor {
             state: genesis_state,
             results,
             journal: Vec::new(),
+            parallel: false,
+            parallel_rounds: 0,
+            fallback_rounds: 0,
             height: 0,
             tip: genesis_hash,
         }
+    }
+
+    /// Turns parallel round execution on or off.
+    ///
+    /// The result must be identical either way; `crates/chain/tests/parallel.rs`
+    /// asserts that on every workload it can construct.
+    pub const fn set_parallel(&mut self, parallel: bool) {
+        self.parallel = parallel;
+    }
+
+    /// Whether rounds are executed in parallel.
+    pub const fn is_parallel(&self) -> bool {
+        self.parallel
+    }
+
+    /// Rounds committed from speculation, and rounds that fell back.
+    pub const fn parallel_stats(&self) -> (u64, u64) {
+        (self.parallel_rounds, self.fallback_rounds)
     }
 
     /// The current world state.
@@ -292,88 +326,13 @@ impl ChainExecutor {
             prevrandao: hash,
         };
 
-        let mut undo = UndoRecord::new();
-        let mut gas_used: u64 = 0;
-        let mut executed = 0usize;
-        let mut deferred = 0usize;
-        let mut receipts: Vec<ReceiptWithBloom<Receipt<Log>>> = Vec::new();
-        let mut transaction_hashes: Vec<B256> = Vec::new();
-
-        let state = std::mem::take(&mut self.state);
-        let mut evm = make_evm(state, &self.params, &ctx);
-
-        for index in order {
-            let (miner, tx) = &tagged[index];
-
-            // The gas budget is a *block* limit, not a per-transaction one. A
-            // transaction that does not fit is skipped, not failed: it stays
-            // valid and eligible for a later chain block.
-            if gas_used.saturating_add(tx.gas_limit()) > gas_limit {
-                deferred += 1;
-                continue;
-            }
-
-            set_beneficiary(&mut evm, *miner);
-
-            // `transact`, not `transact_commit`, so the *actual* state diff is
-            // visible before it is applied.
-            //
-            // This matters more than it looks. An earlier version built the
-            // undo record from the transaction's statically declared access
-            // set, which is exactly the set the EVM is free to exceed: a CALL
-            // to a computed address, a CREATE, a SELFDESTRUCT all touch
-            // accounts nothing declared. Rolling back from that record would
-            // leave those accounts at their post-execution values, and the
-            // divergence would surface only after a reorg, as a state root
-            // mismatch with no obvious cause. The revm diff is authoritative;
-            // the static access set is for *ordering* only.
-            match evm.transact(tx) {
-                Ok(ResultAndState { result, state: changes }) => {
-                    for address in changes.keys() {
-                        undo.note(*address, evm.db());
-                    }
-                    evm.db_mut().commit(changes);
-
-                    let used = result.tx_gas_used();
-                    gas_used = gas_used.saturating_add(used);
-                    executed += 1;
-                    transaction_hashes.push(*tx.inner().hash());
-
-                    let logs: Vec<Log> = result.logs().to_vec();
-                    let receipt = Receipt {
-                        status: Eip658Value::Eip658(matches!(
-                            result,
-                            ExecutionResult::Success { .. }
-                        )),
-                        cumulative_gas_used: gas_used,
-                        logs,
-                    };
-                    receipts.push(receipt.into());
-
-                    if !matches!(result, ExecutionResult::Success { .. }) {
-                        trace!(
-                            hash = %tx.inner().hash(),
-                            "transaction reverted; still included and still charged"
-                        );
-                    }
-                }
-                Err(error) => {
-                    // An invalid transaction (bad nonce, unfundable sender) is
-                    // *skipped*, not fatal. Under deferred execution a miner
-                    // cannot know a transaction's validity when it includes
-                    // it, so a block carrying one must not be rejected.
-                    // OPEN-PROBLEMS.md P-013.
-                    debug!(
-                        hash = %tx.inner().hash(),
-                        %error,
-                        "transaction not executable, skipping"
-                    );
-                    deferred += 1;
-                }
-            }
-        }
-
-        self.state = evm.into_db();
+        let outcome_parts = if self.parallel {
+            self.execute_rounds_parallel(&tagged, &order, &access, &ctx, gas_limit)
+        } else {
+            self.execute_sequentially(&tagged, &order, &ctx, gas_limit)
+        };
+        let ExecutedBlock { undo, gas_used, executed, deferred, receipts, transaction_hashes } =
+            outcome_parts;
 
         let state_root = self.state.state_root();
         // A real receipts root: the Merkle root over RLP-encoded receipts,
@@ -416,6 +375,136 @@ impl ChainExecutor {
         Ok(outcome)
     }
 
+    /// Executes the canonical order one transaction at a time.
+    ///
+    /// The reference implementation. Whatever [`Self::execute_rounds_parallel`]
+    /// does, it must produce exactly this.
+    fn execute_sequentially(
+        &mut self,
+        tagged: &[(Address, ChainTx)],
+        order: &[usize],
+        ctx: &ChainBlockCtx,
+        gas_limit: u64,
+    ) -> ExecutedBlock {
+        let mut block = ExecutedBlock::default();
+
+        let state = std::mem::take(&mut self.state);
+        let mut evm = make_evm(state, &self.params, ctx);
+
+        for index in order {
+            let (miner, tx) = &tagged[*index];
+
+            // The gas budget is a *block* limit, not a per-transaction one. A
+            // transaction that does not fit is skipped, not failed: it stays
+            // valid and eligible for a later chain block.
+            if block.gas_used.saturating_add(tx.gas_limit()) > gas_limit {
+                block.deferred += 1;
+                continue;
+            }
+
+            set_beneficiary(&mut evm, *miner);
+
+            match evm.transact(tx) {
+                Ok(ResultAndState { result, state: changes }) => {
+                    for address in changes.keys() {
+                        block.undo.note(*address, evm.db());
+                    }
+                    evm.db_mut().commit(changes);
+                    block.record(tx, &result);
+                }
+                Err(error) => {
+                    debug!(
+                        hash = %tx.inner().hash(),
+                        %error,
+                        "transaction not executable, skipping"
+                    );
+                    block.deferred += 1;
+                }
+            }
+        }
+
+        self.state = evm.into_db();
+        block
+    }
+
+    /// Executes the canonical order a round at a time, speculatively.
+    ///
+    /// Each round is executed in parallel against the same pre-round state,
+    /// then validated. If any transaction in the round actually touched an
+    /// account another read or wrote, the whole round is discarded and
+    /// re-executed sequentially — so the result is always the sequential one.
+    ///
+    /// See [`crate::parallel`] for why that is sufficient.
+    fn execute_rounds_parallel(
+        &mut self,
+        tagged: &[(Address, ChainTx)],
+        order: &[usize],
+        access: &[TxAccessSet],
+        ctx: &ChainBlockCtx,
+        gas_limit: u64,
+    ) -> ExecutedBlock {
+        let layers = crate::parallel::partition_rounds(order, access);
+        let mut block = ExecutedBlock::default();
+
+        for layer in layers {
+            let round: Vec<(Address, ChainTx)> = layer.iter().map(|i| tagged[*i].clone()).collect();
+
+            let speculations = crate::parallel::speculate(&self.state, &self.params, ctx, &round);
+
+            if crate::parallel::validate(&speculations).is_some() {
+                self.fallback_rounds += 1;
+                // Not independent after all. Fall back for this round only,
+                // reusing the sequential path so there is one implementation
+                // of the semantics rather than two.
+                let sequential = self.execute_sequentially(tagged, &layer, ctx, gas_limit);
+                block.absorb(sequential);
+                continue;
+            }
+
+            // Independent: apply the same inclusion rules the sequential path
+            // would, in canonical order, using results already computed.
+            self.parallel_rounds += 1;
+            let mut credited: Vec<(Address, U256)> = Vec::new();
+            for (position, speculation) in speculations.into_iter().enumerate() {
+                let index = &layer[position];
+                let (miner, tx) = &tagged[*index];
+
+                if block.gas_used.saturating_add(tx.gas_limit()) > gas_limit {
+                    block.deferred += 1;
+                    continue;
+                }
+                let Some(result) = speculation.result.clone() else {
+                    block.deferred += 1;
+                    continue;
+                };
+
+                for address in speculation.diff.keys() {
+                    block.undo.note(*address, &self.state);
+                }
+                block.undo.note(*miner, &self.state);
+                // Moved, not cloned: an `EvmState` clone per transaction is
+                // pure overhead on the path this optimisation exists to make
+                // fast.
+                credited.push((*miner, speculation.fee_credit));
+                block.record(tx, &result);
+                self.state.commit(speculation.diff);
+            }
+
+            // Fee credits last: they were removed from the diffs so they would
+            // not look like conflicts, and addition commutes.
+            for (miner, credit) in credited {
+                if credit.is_zero() {
+                    continue;
+                }
+                let mut account = self.state.account(miner).cloned().unwrap_or_default();
+                account.info.balance = account.info.balance.saturating_add(credit);
+                self.state.insert_account(miner, account);
+            }
+        }
+
+        block
+    }
+
     /// Discards undo records below `height`, which can no longer be reorged.
     ///
     /// Without this the journal grows forever. The pruning horizon is the
@@ -437,6 +526,58 @@ impl ChainExecutor {
     /// a thousand records for blocks that touched one each.
     pub fn journal_entries(&self) -> usize {
         self.journal.iter().map(|(_, _, record)| record.len()).sum()
+    }
+}
+
+/// Accumulated results of executing one chain block.
+#[derive(Debug, Default)]
+struct ExecutedBlock {
+    undo: UndoRecord,
+    gas_used: u64,
+    executed: usize,
+    deferred: usize,
+    receipts: Vec<ReceiptWithBloom<Receipt<Log>>>,
+    transaction_hashes: Vec<B256>,
+}
+
+impl ExecutedBlock {
+    /// Records one executed transaction's receipt and gas.
+    fn record(&mut self, tx: &ChainTx, result: &ExecutionResult) {
+        self.gas_used = self.gas_used.saturating_add(result.tx_gas_used());
+        self.executed += 1;
+        self.transaction_hashes.push(*tx.inner().hash());
+
+        let receipt = Receipt {
+            status: Eip658Value::Eip658(matches!(result, ExecutionResult::Success { .. })),
+            cumulative_gas_used: self.gas_used,
+            logs: result.logs().to_vec(),
+        };
+        self.receipts.push(receipt.into());
+
+        if !matches!(result, ExecutionResult::Success { .. }) {
+            trace!(
+                hash = %tx.inner().hash(),
+                "transaction reverted; still included and still charged"
+            );
+        }
+    }
+
+    /// Folds another block's results into this one.
+    ///
+    /// Used when a round falls back to sequential execution: cumulative gas in
+    /// the fallback's receipts restarted from zero, so it is rebased here.
+    fn absorb(&mut self, other: Self) {
+        let base = self.gas_used;
+        self.undo.merge(other.undo);
+        self.gas_used = base.saturating_add(other.gas_used);
+        self.executed += other.executed;
+        self.deferred += other.deferred;
+        self.transaction_hashes.extend(other.transaction_hashes);
+        for mut receipt in other.receipts {
+            receipt.receipt.cumulative_gas_used =
+                base.saturating_add(receipt.receipt.cumulative_gas_used);
+            self.receipts.push(receipt);
+        }
     }
 }
 

@@ -18,9 +18,12 @@ alloy-eips.workspace = true
 alloy-evm.workspace = true
 alloy-trie.workspace = true
 revm.workspace = true
+rayon.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 alloy-genesis.workspace = true
+alloy-sol-types.workspace = true
+rayon.workspace = true
 proptest.workspace = true

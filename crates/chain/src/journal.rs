@@ -48,6 +48,17 @@ impl UndoRecord {
         self.prior.is_empty()
     }
 
+    /// Folds another record into this one.
+    ///
+    /// The *earlier* pre-value wins, which is the same rule
+    /// [`Self::note`] applies: a record describes the state before the block
+    /// ran, not before its most recent transaction.
+    pub fn merge(&mut self, other: Self) {
+        for (address, prior) in other.prior {
+            self.prior.entry(address).or_insert(prior);
+        }
+    }
+
     /// Restores the recorded pre-values.
     pub fn apply(&self, state: &mut WorldState) {
         for (address, prior) in &self.prior {

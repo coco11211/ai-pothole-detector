@@ -38,9 +38,11 @@
 pub mod bodies;
 pub mod executor;
 pub mod journal;
+pub mod parallel;
 pub mod reorg;
 
 pub use bodies::{BodyStore, ChainTx};
 pub use executor::{ChainBlockOutcome, ChainExecutor, ExecutionError};
 pub use journal::UndoRecord;
+pub use parallel::{RoundConflict, Speculation, speculate, validate};
 pub use reorg::{ChainReorg, compute_reorg};
