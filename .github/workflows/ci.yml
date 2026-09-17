@@ -22,6 +22,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # solc is needed only by the artifact-drift check in
+      # crates/execution/tests. That test skips when solc is absent, so this
+      # step is what keeps the checked-in ERC-20 bytecode honest.
+      - name: Install solc
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/solc" \
+            https://github.com/ethereum/solidity/releases/download/v0.8.30/solc-static-linux
+          chmod +x "$RUNNER_TEMP/solc"
+          echo "CHAINNAME_SOLC=$RUNNER_TEMP/solc" >> "$GITHUB_ENV"
+
+
       - name: Format
         run: cargo fmt --all --check
 

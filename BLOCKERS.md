@@ -28,4 +28,18 @@ requires `forge script` to actually run.
    `transfer` semantics rather than just a successful deploy. M7's `forge`
    requirement has no such fallback and would become a genuine blocker.
 
-**State:** deferred until M2. Not blocking M0 or M1.
+**State (updated at M2):** PARTIALLY RESOLVED.
+
+- `solc` 0.8.30 was fetched successfully from the solidity releases page and
+  lives at `$SCRATCH/tools/solc`. The M2 gate ran against it: an ERC-20
+  compiled by solc deploys and `transfer` moves balances
+  (`crates/execution/tests/evm_execution.rs::erc20_deploys_and_transfers`).
+- The compiled bytecode is checked in at `crates/execution/testdata/Erc20.bin`
+  so CI needs no solc to run the gate. A separate test,
+  `solc_bytecode_is_current`, recompiles and compares whenever solc is
+  available (`CHAINNAME_SOLC` env var or `solc` on PATH), so the artifact
+  cannot silently drift from `Erc20.sol`. CI installs solc for exactly this.
+- **Foundry is still absent.** The M7 gate requires `forge script` to really
+  run. Not yet attempted. If `foundryup` cannot reach its release host from
+  this environment, M7 becomes a genuine blocker and will be recorded here as
+  a new entry rather than quietly downgraded.
