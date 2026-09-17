@@ -10,7 +10,7 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M2: EXECUTION** — PASSED. **M3: POW AND BLOCKS** — IN PROGRESS
+**M3: POW AND BLOCKS** — PASSED. **M4: GHOSTDAG** — IN PROGRESS
 
 ## State right now
 
@@ -33,6 +33,15 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M3 GATE PASSED.** `crates/difficulty/tests/retarget_simulation.rs`
+  simulates 150,000 blocks through a 10x hashrate step up and a 90% step down:
+  block time returns to within 5% of the 1s target in every regime, difficulty
+  reaches ~10x and returns to ~1x, the worst block took 9.7s (no stall), and
+  settled block times span under 10% of their mean (no oscillation). The
+  literal 10,000-block horizon is tested separately — see DECISIONS.md C-006
+  for why 10,000 cannot show convergence.
+  `crates/consensus/tests/single_node_chain.rs` mines and validates a real
+  200-block chain with real proof of work in 2.8s.
 - **M2 GATE PASSED.** An ERC-20 compiled by solc 0.8.30 deploys through revm
   and `transfer` moves balances correctly
   (`crates/execution/tests/evm_execution.rs`). Also proven there: base fee is
@@ -53,8 +62,23 @@ Crates that exist and what they hold:
 - `crates/execution` — `WorldState` (revm `Database` + `DatabaseCommit` +
   `DatabaseRef`, state root via alloy-trie), genesis loading from
   `alloy_genesis::Genesis`, and the EVM driver. 16 tests.
+- `crates/pow` — `PowHash` trait + `DoubleKeccak256`. 7 tests.
+- `crates/difficulty` — compact `bits` codec + ASERT. 25 unit + 3 simulation.
+- `crates/consensus` — genesis, header validation, miner. 13 tests.
 
 More facts not to re-derive:
+- **ASERT must compute its intermediate in U512.** `anchor * factor` needs up
+  to 256+17 bits and the shift adds 16 more. A saturating U256 multiply does
+  NOT contain this: the later `>> 16` pulls the saturated value back under the
+  pow limit so the clamp never fires and a silently wrong target ships. See
+  DECISIONS.md C-007. Three regression tests guard it. Do not "simplify" this
+  back to U256.
+- Consensus arithmetic tests must use inputs at the extremes of the type. The
+  original ASERT tests used `U256::MAX >> 40`, which does not overflow, and
+  missed the bug entirely.
+- `CompactTarget::to_target` must reject encodings whose shift annihilates the
+  mantissa (e.g. `0x01000001` -> 0). A zero target is unsatisfiable, so it is
+  an error, not an `Ok(0)`. Found by a property test.
 - `alloy_evm::Evm` has NO `set_block`. The setter is `ContextSetters::set_block`
   reached via `EthEvm::ctx_mut()`. `chainname_execution::set_beneficiary` wraps
   this; it is how merge-set coinbase attribution works.
@@ -67,22 +91,21 @@ More facts not to re-derive:
 
 ## In flight
 
-M3 PoW and blocks: block structure, PoW hash, ASERT retargeting, block
-validation, single-node mining loop.
+M4 GHOSTDAG: DAG storage, blue set, blue score, selected parent chain, merge
+set ordering, and the deterministic intra-merge-set sort.
 
 ## Exact next action
 
-1. `crates/pow`: `PowHash` trait + `KeccakF1600x2` (two-round Keccak-f[1600]
-   over the RLP header, truncated to 256 bits). Testnet placeholder — the
-   definition site must carry the cryptanalytic-review warning.
-2. `crates/difficulty`: compact `bits` <-> target conversion, then ASERT with
-   the Bitcoin Cash cubic approximation to 2^x. Integer only; the workspace
-   already denies `clippy::float_arithmetic`. Tests BEFORE implementation, per
-   the engineering standards.
-3. Block validation + a single-node mining loop.
-4. Gate: mine 10,000 blocks; difficulty must track a simulated 10x hashrate
-   step up and a 90% step down without stalling or oscillating. That
-   simulation IS the test.
+1. `crates/ghostdag`: `DagStore` holding headers plus per-block GHOSTDAG data
+   (selected parent, blue set, blue score, blue work, mergeset blues/reds).
+2. Implement the GHOSTDAG ordering algorithm from the PHANTOM paper:
+   selected parent = max blue work among parents; k-cluster check to colour
+   the mergeset blue or red; blue score = parent's blue score + blue mergeset
+   size.
+3. Implement the merge-set base sequence and the layering sort exactly as
+   ARCHITECTURE.md §6.1 and §6.3 specify.
+4. Gate: property tests for P1-P4 in ARCHITECTURE.md §6.4, plus adversarial
+   DAGs asserting ordering is identical across independently-built instances.
 
 ## Milestone ledger
 
@@ -91,8 +114,8 @@ validation, single-node mining loop.
 | M0  | Architecture       | PASSED      |
 | M1  | Skeleton           | PASSED      |
 | M2  | Execution          | PASSED      |
-| M3  | PoW and blocks     | IN PROGRESS |
-| M4  | GHOSTDAG           | not started |
+| M3  | PoW and blocks     | PASSED      |
+| M4  | GHOSTDAG           | IN PROGRESS |
 | M5  | Networking         | not started |
 | M6  | The seam           | not started |
 | M7  | RPC                | not started |

@@ -17,6 +17,7 @@ chainname-difficulty = { path = "crates/difficulty" }
 chainname-ghostdag   = { path = "crates/ghostdag" }
 chainname-storage    = { path = "crates/storage" }
 chainname-execution  = { path = "crates/execution" }
+chainname-consensus  = { path = "crates/consensus" }
 chainname-node       = { path = "crates/node" }
 
 

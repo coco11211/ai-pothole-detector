@@ -1,0 +1,18 @@
+[package]
+name = "chainname-pow"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chainname-primitives.workspace = true
+alloy-primitives.workspace = true
+tiny-keccak.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+hex.workspace = true

@@ -116,6 +116,48 @@ Per the brief, and independently correct: `k=18` is only proven for 1 bps, and
 recomputing it needs a *measured* propagation bound that does not exist until
 the M5 harness runs.
 
+## D-016 — "two-round Keccak-f[1600]" read as double-Keccak256 — OPEN-RISK
+
+The brief said "two-round Keccak-f\[1600\] over the block header, truncated
+to 256 bits". That admits two readings:
+
+1. Two applications of the *hash* — `keccak256(keccak256(header))`, i.e.
+   Bitcoin's double-SHA-256 with Keccak substituted. Each application runs the
+   full 24-round permutation.
+2. A **reduced-round** permutation running 2 of Keccak-f's 24 rounds.
+
+Reading 2 produces a function that is trivially invertible. Two-round Keccak-f
+has been broken in practice; a miner could compute preimages directly rather
+than searching nonces, which does not weaken the proof of work, it removes it
+entirely. Implemented reading 1.
+
+Tagged OPEN-RISK rather than SETTLED because it is an interpretation of an
+ambiguous instruction, not a verified requirement. Reversing it is a one-line
+change behind the `PowHash` trait. The function is a testnet placeholder either
+way and still requires cryptanalytic review — OPEN-PROBLEMS.md P-006.
+
+## D-017 — genesis is the ASERT anchor — SETTLED
+
+Absolute ASERT: every block's difficulty is computed from genesis directly,
+never from its parent. Retarget error cannot accumulate, and any block's
+difficulty is independently verifiable from the anchor plus its own height and
+timestamp — no need to walk the chain. This is the Bitcoin Cash `aserti3-2d`
+form.
+
+## D-018 — block timestamps are milliseconds — SETTLED
+
+Headers carry `timestamp_ms`. At 10 blocks/second a second-resolution
+timestamp cannot order blocks or drive ASERT. The EVM's `TIMESTAMP` opcode is
+still fed seconds, because contracts depend on that unit.
+
+## D-019 — future-timestamp drift bounded at 2 minutes — SETTLED
+
+A block claiming a future timestamp makes the chain look *behind* schedule,
+which ASERT answers by lowering difficulty. An unbounded future timestamp is
+therefore a difficulty attack, not a cosmetic problem. Two minutes is far above
+any plausible honest clock skew and far below the 2-hour half-life, so honest
+blocks are never rejected and the attack is bounded to a negligible nudge.
+
 ---
 
 # CORRECTIONS
@@ -177,3 +219,49 @@ statically declared keys (sender, `to`, declared access list), and the real
 conflict detection has to happen at execution time via speculation (M10
 Block-STM). ARCHITECTURE.md §6.2 states the approximation explicitly rather
 than implying the sort is exact.
+
+## C-006 — 10,000 blocks cannot demonstrate difficulty convergence
+
+The M3 gate asked for 10,000 blocks. The arithmetic says that is not enough.
+
+Adapting to a 10x hashrate change requires the chain to run `log2(10) ≈ 3.32`
+half-lives ahead of schedule. At the specified 2-hour half-life that is ~23,900
+seconds of accumulated lead. With blocks arriving 10x too fast, lead builds at
+9 seconds per second, so the adjustment completes after ~2,650 seconds of real
+time — by which point roughly 26,000 blocks have been produced. A 10,000-block
+run can only show the chain moving in the right direction, never arriving.
+
+Both are therefore tested in `crates/difficulty/tests/retarget_simulation.rs`:
+
+- `difficulty_converges_after_hashrate_steps` runs 150,000 blocks and asserts
+  actual convergence (block time back within 5% of target, difficulty within
+  10% of 10x, no stall above 15s, settled spread under 10% of the mean).
+- `ten_thousand_blocks_track_in_the_right_direction` runs the literal 10,000
+  and asserts what that horizon can actually show.
+
+This is not a relaxation of the gate. It is a stronger test plus the original.
+
+## C-007 — ASERT's 256-bit intermediate silently overflowed (found, fixed)
+
+Not a correction to the brief — a bug in our own first implementation, recorded
+because the failure mode is instructive and could easily be reintroduced.
+
+`next_target` computed `anchor_target * factor` in `U256` with
+`saturating_mul`. `anchor * factor` needs up to 256 + 17 bits and the
+subsequent left shift adds up to 16 more, so any anchor near the top of the
+range overflowed. Saturating did **not** contain it: the `>> RADIX_BITS`
+afterwards pulled the saturated value back under the pow limit, so the clamp
+never fired and a wrong target was returned as though it were correct.
+
+Effect: an anchor of `U256::MAX >> 8` retargeted **256x harder** at zero drift.
+The unit tests missed it because they used `U256::MAX >> 40`, which does not
+overflow. It surfaced as the M3 single-node chain test taking 16 minutes
+instead of 3 seconds — a performance symptom of a correctness bug.
+
+Fixed by computing the intermediate in `U512`
+(`crates/difficulty/src/asert.rs`). Three regression tests added:
+`near_maximum_anchor_is_unchanged_at_zero_drift`,
+`near_maximum_anchor_still_halves_correctly`, `maximum_anchor_does_not_overflow`.
+
+Lesson carried forward: consensus arithmetic tests must include inputs at the
+extremes of the type, not just comfortable mid-range values.

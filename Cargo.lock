@@ -311,7 +311,7 @@ dependencies = [
  "alloy-rlp",
  "alloy-serde",
  "alloy-sol-types",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "serde",
  "serde_json",
  "serde_with",
@@ -1103,6 +1103,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "chainname-consensus"
+version = "0.0.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-trie",
+ "chainname-difficulty",
+ "chainname-pow",
+ "chainname-primitives",
+ "proptest",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "chainname-difficulty"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "chainname-execution"
 version = "0.0.1"
 dependencies = [
@@ -1146,6 +1170,17 @@ dependencies = [
  "clap",
  "eyre",
  "tracing",
+]
+
+[[package]]
+name = "chainname-pow"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "chainname-primitives",
+ "hex",
+ "proptest",
+ "tiny-keccak",
 ]
 
 [[package]]
@@ -3495,6 +3530,15 @@ checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "tiny-keccak"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
+dependencies = [
+ "crunchy",
 ]
 
 [[package]]
