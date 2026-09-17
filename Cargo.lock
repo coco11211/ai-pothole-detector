@@ -1302,6 +1302,7 @@ dependencies = [
  "chainname-primitives",
  "proptest",
  "thiserror 2.0.20",
+ "tokio",
  "tracing",
 ]
 

@@ -16,6 +16,7 @@ alloy-rlp.workspace = true
 alloy-consensus.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "io-util", "macros"] }
 
 [dev-dependencies]
 proptest.workspace = true

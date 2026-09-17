@@ -115,7 +115,7 @@ free, as often as it likes. Bandwidth is the cost, and bandwidth is properly
 bounded by per-peer rate limiting, not by reputation scoring. No rate limiting
 exists yet. It belongs with the M8 resource-exhaustion work.
 
-## P-012 — there is no real transport yet
+## P-012 — there is no real transport yet — RESOLVED
 
 M5 is built and gated on a **deterministic simulation**: virtual time, seeded
 randomness, the real `DagSync` state machine and the real `DagStore`, but
@@ -127,9 +127,20 @@ debugged, and this harness found four real bugs that a socket-based test would
 have shown only as intermittent flakiness (see the M5 commit). But it does mean
 no TCP framing, handshake, or backpressure code has been written or tested.
 
-That code must exist before M8's soak test means anything, and before M7 can
-be exercised against a real client. Planned to land alongside the RPC server at
-M7, which introduces an async runtime anyway.
+**Resolved.** `crates/net/transport` implements length-prefixed framing and
+`crates/net/p2p` the connection runtime: accept loop, dialer with redial, one
+task per connection, a bounded outbound queue per peer, and a ticker.
+
+`crates/net/tests/tcp_convergence.rs` runs it over real sockets: two nodes
+handshake, a 25-block chain syncs in full with matching tips, and three nodes
+in a line relay a block transitively from A to C through B — flood relay
+actually relaying rather than two peers exchanging directly. Garbage on the
+wire and a frame claiming four gigabytes both get the peer dropped without
+taking the node with it.
+
+The deterministic simulation remains the place long multi-node behaviour is
+tested, because a wall-clock TCP test that fails once in twenty runs tells
+nobody anything.
 
 ## P-013 — deferred execution means blocks can carry unexecutable transactions
 
@@ -177,13 +188,14 @@ linear in the range whether or not anything matches.
 A real implementation keeps an address-and-topic index. Dapps with event-heavy
 front ends will feel this before anything else does.
 
-## P-016 - the dev node has no peer-to-peer transport
+## P-016 - the dev node does not yet join the peer-to-peer network
 
-`--dev` runs a complete single-node chain: DAG, execution, pool, mining, RPC.
-It does not talk to peers, because no socket transport exists yet (P-012). The
-sync state machine is exercised only by the deterministic harness.
+A TCP transport now exists and is tested (P-012, resolved), but
+`chainname-node --dev` does not use it: it still runs a standalone chain with
+RPC and mining and no peers.
 
-So the RPC surface is proven against real clients on a single node, and
-convergence is proven in simulation across five nodes, but the two have never
-been proven together. Joining them is what P-012 is for, and it should happen
-before M8's soak, which is otherwise soaking half a system.
+So all three parts work — RPC against real clients, convergence over real
+TCP, convergence in simulation — but the binary wires only two of them
+together. What remains is plumbing, not design: give the dev node a
+`P2pNode`, route mined blocks through `announce_local_block`, and feed
+accepted blocks into the backend.
