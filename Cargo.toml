@@ -18,6 +18,8 @@ chainname-ghostdag   = { path = "crates/ghostdag" }
 chainname-storage    = { path = "crates/storage" }
 chainname-execution  = { path = "crates/execution" }
 chainname-consensus  = { path = "crates/consensus" }
+chainname-net        = { path = "crates/net" }
+chainname-testkit    = { path = "crates/testkit" }
 chainname-node       = { path = "crates/node" }
 
 

@@ -10,7 +10,7 @@ attestation, no voting. Testnet only.
 
 ## Current milestone
 
-**M4: GHOSTDAG** — PASSED. **M5: NETWORKING** — IN PROGRESS
+**M5: NETWORKING** — PASSED (simulated transport; see C-008/P-012). **M6: THE SEAM** — IN PROGRESS
 
 ## State right now
 
@@ -33,6 +33,13 @@ Key facts a fresh session needs and should not re-derive:
 
 - **M0 GATE PASSED.** ARCHITECTURE.md exists; every reth/alloy/revm
   integration point cites a file path and symbol read from pinned source.
+- **M5 GATE PASSED.** Five nodes converge on identical DAG state from a cold
+  start and stay converged across thirty simulated minutes, checked every
+  minute, under 2% packet loss and 50-250ms latency. Also green: 25% packet
+  loss, 800-2500ms latency, nine nodes, and ten different seeds. The run is
+  reproducible from its seed (asserted), and different seeds produce different
+  runs (also asserted, so the first claim is not vacuous).
+  Transport is simulated, not TCP — DECISIONS.md C-008, OPEN-PROBLEMS.md P-012.
 - **M4 GATE PASSED.** GHOSTDAG colouring, blue score, blue work, selected
   parent chain, merge set, and the layering sort. 34 tests including five
   property tests for ARCHITECTURE.md §6.4's P1-P4 and the round-advance
@@ -76,8 +83,25 @@ Crates that exist and what they hold:
 - `crates/ghostdag` — `work` (PoW accumulation), `dag` (`DagStore`,
   reachability, colouring), `ordering` (base sequence + layering sort).
   34 tests.
+- `crates/net` — wire protocol (`message`), peer scoring with no stake
+  weighting (`peer`), and `DagSync`, a pure state machine. 34 tests.
+- `crates/testkit` — seeded LCG and the deterministic multi-node simulation.
+  16 tests.
 
 More facts not to re-derive:
+- `DagSync` is a PURE STATE MACHINE. No I/O, no clock (time is a parameter),
+  no sockets. Do not "helpfully" give it a tokio runtime. This is what makes
+  the simulation deterministic and the bugs reproducible. DECISIONS.md D-024.
+- Anything whose ITERATION ORDER reaches the wire must be ordered
+  (`BTreeMap`/`BTreeSet`), never hashed. D-025.
+- Duplicate blocks are NOT misbehaviour under flood relay. Penalising them
+  partitions honest networks. D-026.
+- Timed-out requests must rotate across peers. Re-asking the same peer is a
+  deadlock, not just slow. D-027.
+- Convergence must be asserted on a SETTLED network. `Simulation::quiesce`
+  stops mining and waits for no outstanding work plus a quiet propagation
+  window. "No traffic in flight" is NOT the criterion — tip reconciliation is
+  perpetual chatter by design.
 - The merge set EXCLUDES the selected parent. A block with ten parents has a
   merge set of nine. The selected parent is the previous chain block and its
   transactions are already executed. DECISIONS.md D-022.
@@ -113,26 +137,23 @@ More facts not to re-derive:
 
 ## In flight
 
-M5 NETWORKING. The largest single work item. Budget accordingly.
+M6 THE SEAM: wire GHOSTDAG ordering into execution.
 
 ## Exact next action
 
-1. `crates/net`: a Kaspa-style flood-relay wire protocol. NOT devp2p — the
-   `eth` protocol is range queries over block numbers and does not fit a DAG
-   (DECISIONS.md D-014, C-001). Messages needed: `Version`/`Verack`,
-   `InvBlock`, `GetBlock`, `Block`, `InvTx`, `GetTx`, `Tx`,
-   `GetTips`, `Tips`, `GetAnticone` (headers-first DAG sync by hash).
-2. Orphan pool: blocks whose parents have not arrived, with a bounded size and
-   eviction. `DagStore::add_block` already returns
-   `DagError::MissingParent` for exactly this.
-3. Peer scoring with NO stake weighting: score on protocol compliance and
-   usefulness (valid blocks delivered, malformed messages, timeouts).
-4. `crates/testkit`: the deterministic multi-node harness. Build it as
-   infrastructure, seeded, with simulated latency and packet loss. It has to
-   be easy to run and reproducible — nondeterministic divergence cannot be
-   debugged.
-5. Gate: 5 nodes on one machine converge on identical DAG state from a cold
-   start, sustained 30 minutes, under simulated packet loss and latency.
+1. `crates/node`: the seam itself. On each DAG change, recompute the virtual
+   selected parent chain and emit a `ChainReorg { removed, added }`.
+2. For each added chain block: build the base sequence
+   (`ghostdag::ordering::base_sequence`), deduplicate, apply
+   `layer_and_sort`, then execute through `chainname_execution` with
+   `set_beneficiary` per transaction (the merged block's own miner).
+3. Deferred state root: store `(height -> state_root, receipts_root,
+   gas_used)` and have a header at height N carry height N-D's values.
+   D = 20 at 1 bps.
+4. Reorg: an undo journal per executed chain block, replayed in reverse.
+   NOT re-execution from genesis.
+5. Gate: 5-node harness, 1 hour, induced reorgs, all nodes agree on the state
+   root at every chain height.
 
 ## Milestone ledger
 
@@ -143,8 +164,8 @@ M5 NETWORKING. The largest single work item. Budget accordingly.
 | M2  | Execution          | PASSED      |
 | M3  | PoW and blocks     | PASSED      |
 | M4  | GHOSTDAG           | PASSED      |
-| M5  | Networking         | IN PROGRESS |
-| M6  | The seam           | not started |
+| M5  | Networking         | PASSED      |
+| M6  | The seam           | IN PROGRESS |
 | M7  | RPC                | not started |
 | M8  | Hardening          | not started |
 | M9  | Raise the rate     | not started |

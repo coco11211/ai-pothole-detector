@@ -102,3 +102,31 @@ Whether that is acceptable depends on whether blue score alone is a sufficient
 deterrent. It is not obvious either way and no analysis has been done here. The
 conservative alternative — pay blues only — is a one-line change in the block
 executor if this turns out to be wrong. Recorded rather than silently resolved.
+
+## P-011 — redundant data is bounded by nothing
+
+Flood relay means a node receives the same block from several peers. That is
+normal and is explicitly *not* treated as misbehaviour — an earlier version
+penalised it and honest five-node networks partitioned themselves within
+fifteen simulated minutes.
+
+The consequence is that a hostile peer can send blocks we already hold, for
+free, as often as it likes. Bandwidth is the cost, and bandwidth is properly
+bounded by per-peer rate limiting, not by reputation scoring. No rate limiting
+exists yet. It belongs with the M8 resource-exhaustion work.
+
+## P-012 — there is no real transport yet
+
+M5 is built and gated on a **deterministic simulation**: virtual time, seeded
+randomness, the real `DagSync` state machine and the real `DagStore`, but
+in-memory message passing rather than sockets.
+
+That is the right way round — the engineering standards call for deterministic
+seeded simulation precisely because nondeterministic divergence cannot be
+debugged, and this harness found four real bugs that a socket-based test would
+have shown only as intermittent flakiness (see the M5 commit). But it does mean
+no TCP framing, handshake, or backpressure code has been written or tested.
+
+That code must exist before M8's soak test means anything, and before M7 can
+be exercised against a real client. Planned to land alongside the RPC server at
+M7, which introduces an async runtime anyway.

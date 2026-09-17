@@ -193,6 +193,54 @@ instead of throwing them away is the reason for using one.
 The separate question of whether red blocks should be *paid* is
 OPEN-PROBLEMS.md P-010.
 
+## D-024 — the sync layer is a pure state machine — SETTLED
+
+`DagSync` takes a message and returns a list of actions. It does no I/O, owns
+no clock (time is a parameter), and holds no sockets.
+
+This is the single most useful structural decision in the networking layer. It
+is what lets five nodes run thirty simulated minutes deterministically, and it
+turned four real bugs from "intermittent flakiness" into "reproducible from
+seed 7". Transport code wraps it; it never wraps transport.
+
+## D-025 — peers are ordered, not hashed — SETTLED
+
+`DagSync::peers` is a `BTreeMap` and `waiting_on`'s children are a `BTreeSet`.
+Iteration order over these feeds directly into the actions emitted, and
+`HashMap` ordering varies per process, which made the seeded simulation
+non-reproducible. Determinism in anything that reaches the wire is a
+requirement here, not a preference.
+
+## D-026 — duplicate blocks are not misbehaviour — SETTLED
+
+Under flood relay every peer announces every block and responses race. An
+earlier version charged a small penalty per duplicate; over thirty simulated
+minutes the penalties accumulated until honest nodes disconnected each other
+and the network partitioned permanently.
+
+Redundant data is a *bandwidth* problem, bounded by rate limiting, not a
+*trust* problem bounded by reputation. OPEN-PROBLEMS.md P-011.
+
+## D-027 — timed-out requests rotate across peers — SETTLED
+
+Re-asking the peer that already failed to answer is a deadlock, not merely
+inefficient: a peer that does not have a block never will, and duplicate-request
+suppression means the hash stays in `requested` and every later attempt is
+filtered out. A handful of blocks became permanently unobtainable and the
+five-node network never converged.
+
+Retries now spread across all ready peers from a rotating offset.
+
+## D-028 — periodic tip reconciliation — SETTLED
+
+Flood relay announces a block once. A lost announcement is usually rescued by a
+later block, whose parents get requested and pull the missing ancestor in as an
+orphan resolves. But the newest blocks have no descendants yet, so a lost
+announcement for a *tip* is never recovered by that mechanism.
+
+Asking every peer for its tips on a timer closes the hole, and is what makes
+convergence eventual rather than merely probable.
+
 ---
 
 # CORRECTIONS
@@ -300,3 +348,28 @@ Fixed by computing the intermediate in `U512`
 
 Lesson carried forward: consensus arithmetic tests must include inputs at the
 extremes of the type, not just comfortable mid-range values.
+
+## C-008 — "5 nodes on one machine" is met by deterministic simulation
+
+The M5 gate says five nodes on one machine, sustained thirty minutes, under
+simulated packet loss and latency. That is implemented as a **deterministic
+simulation**: virtual time, a seeded integer LCG, the real `DagSync` state
+machine over the real `DagStore`, real proof of work at an easy target, and
+in-memory message passing with modelled loss and latency.
+
+Not a shortcut — the engineering standards ask for exactly this ("Deterministic
+seeded simulation where possible — you cannot debug nondeterministic
+divergence"). It earned its keep immediately, finding four real bugs that a
+socket-based test would have surfaced only as intermittent flakiness:
+
+1. `HashMap` iteration order reaching the wire, making runs irreproducible.
+2. Duplicate-block penalties partitioning an honest network over ~15 minutes.
+3. Timed-out requests re-asked to the same unhelpful peer, deadlocking forever.
+4. Lost tip announcements never recovered, because a tip has no descendant to
+   rescue it.
+
+Each of those is a bug that only appears at multi-node scale over time.
+
+What it does *not* cover is TCP framing, handshake, and backpressure, because
+no socket code exists yet. Recorded honestly as OPEN-PROBLEMS.md P-012, to land
+with the RPC server at M7.

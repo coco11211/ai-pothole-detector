@@ -1157,6 +1157,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "chainname-net"
+version = "0.0.1"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "chainname-ghostdag",
+ "chainname-primitives",
+ "proptest",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "chainname-node"
 version = "0.0.1"
 dependencies = [
@@ -1218,6 +1232,20 @@ dependencies = [
  "redb",
  "tempfile",
  "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "chainname-testkit"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "alloy-trie",
+ "chainname-difficulty",
+ "chainname-ghostdag",
+ "chainname-net",
+ "chainname-pow",
+ "chainname-primitives",
  "tracing",
 ]
 

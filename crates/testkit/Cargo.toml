@@ -1,0 +1,19 @@
+[package]
+name = "chainname-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+chainname-primitives.workspace = true
+chainname-ghostdag.workspace = true
+chainname-net.workspace = true
+chainname-pow.workspace = true
+chainname-difficulty.workspace = true
+alloy-primitives.workspace = true
+alloy-trie.workspace = true
+tracing.workspace = true
